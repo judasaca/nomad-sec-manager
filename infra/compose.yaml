@@ -1,0 +1,17 @@
+name: nomad-sec-manager
+
+services:
+  mongo:
+    image: mongo:8.0.38
+    ports:
+      - "127.0.0.1:${NOMAD_MONGO_PORT:-28547}:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand({ ping: 1 }).ok === 1 ? 0 : 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  mongo-data:
