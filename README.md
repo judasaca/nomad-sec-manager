@@ -6,7 +6,7 @@ NOMAD Security Manager is a planned security management platform for the NOMAD e
 
 The first milestone is a backend service that runs repeatable static analysis checks against a configured set of GitHub and GitLab repositories. The service will coordinate scan runs and collect their results for review in the UI.
 
-The backend will use Nomad SecOps, a standalone Python project that supports both GitHub and GitLab. Its `develop` branch currently audits GitHub Actions workflows with zizmor and checks for unpinned container images declared in GitLab CI configurations. See the [Nomad SecOps `develop` branch](https://github.com/judasaca/nomad-sec-ops/tree/develop) for the available checks and scanner usage.
+The backend depends on Nomad SecOps, a standalone Python project that supports both GitHub and GitLab. Its `develop` branch currently audits GitHub Actions workflows with zizmor and checks for unpinned container images declared in GitLab CI configurations. See the [Nomad SecOps `develop` branch](https://github.com/judasaca/nomad-sec-ops/tree/develop) for the available checks and scanner usage.
 
 ## Technology stack
 
@@ -25,7 +25,7 @@ The backend will use Nomad SecOps, a standalone Python project that supports bot
 
 ## Local development
 
-Install uv, Node.js 24 with npm, and Docker with the Compose plugin. uv can install Python 3.14 from the backend's version pin. [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/)
+Install Git, uv, Node.js 24 with npm, and Docker with the Compose plugin. uv can install Python 3.14 from the backend's version pin. [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/)
 
 | Directory | Service | Default address | Port override |
 | --- | --- | --- | --- |
@@ -44,8 +44,7 @@ Run the backend and UI in separate terminals.
 
 ```sh
 cd backend
-uv sync --locked
-uv run --locked nomad-sec-manager-dev
+uv run --upgrade-package nomad-sec-ops nomad-sec-manager-dev
 ```
 
 ```sh
@@ -53,6 +52,8 @@ cd ui
 npm ci
 npm run dev
 ```
+
+The backend command checks GitHub for the latest Nomad SecOps `develop` commit at startup and records the resolved commit in `backend/uv.lock`. CI uses the committed lockfile.
 
 Set the corresponding environment variable before launching a service to change its port. Set `NOMAD_API_PORT` for both the API and Vite when changing the API port because Vite proxies `/api` to the backend. Set `NOMAD_MONGO_PORT` for both Compose and the API when changing the MongoDB port. The API also accepts `NOMAD_MONGO_URI` and `NOMAD_MONGO_DATABASE` to override the connection string and database name. The default database is `nomad_sec_manager`. All services bind to the loopback interface. The MongoDB container uses a named volume and runs without authentication for local development.
 
