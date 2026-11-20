@@ -25,7 +25,7 @@ The backend will use Nomad SecOps, a standalone Python project that supports bot
 
 ## Local development
 
-The repository contains a FastAPI scaffold, a minimal React entry point, and local MongoDB infrastructure. Install uv, Node.js 24 with npm, and Docker with the Compose plugin. uv can install Python 3.14 from the backend's version pin. [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/)
+Install uv, Node.js 24 with npm, and Docker with the Compose plugin. uv can install Python 3.14 from the backend's version pin. [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/)
 
 | Directory | Service | Default address | Port override |
 | --- | --- | --- | --- |
@@ -54,10 +54,12 @@ npm ci
 npm run dev
 ```
 
-Set the corresponding environment variable before launching a service to change its port, for example `NOMAD_UI_PORT=19543 npm run dev`. All services bind to the loopback interface. The MongoDB container uses a named volume and runs without authentication for local development.
+Set the corresponding environment variable before launching a service to change its port. Set `NOMAD_API_PORT` for both the API and Vite when changing the API port because Vite proxies `/api` to the backend. Set `NOMAD_MONGO_PORT` for both Compose and the API when changing the MongoDB port. The API also accepts `NOMAD_MONGO_URI` and `NOMAD_MONGO_DATABASE` to override the connection string and database name. The default database is `nomad_sec_manager`. All services bind to the loopback interface. The MongoDB container uses a named volume and runs without authentication for local development.
+
+Open **Repositories** in the UI and paste a public GitHub URL or `owner/repository` into **Add repository**. The API saves the GitHub metadata in MongoDB, including the default branch, description, language, stars, and the branch's commit count, latest commit hash, and committer date. Use **Refresh** to fetch a new snapshot, **Edit** to change the repository URL, or **Delete** to remove the saved entry. Imports and refreshes use GitHub's unauthenticated public API and are subject to its rate limits.
 
 Stop the application servers with Ctrl+C and run `docker compose -f infra/compose.yaml down` from the repository root to stop MongoDB and retain its data.
 
 ## Checks
 
-GitHub Actions runs on pull requests and pushes to `develop` and `main`. It verifies locked installs, runs Ruff lint and format checks, starts the API, runs ESLint and TypeScript checks, builds the UI, and starts MongoDB through Compose.
+GitHub Actions runs on pull requests and pushes to `develop` and `main`. It verifies locked installs, runs the backend tests and Ruff checks, checks that the API can list repositories from MongoDB, and runs ESLint, TypeScript, and the UI build.

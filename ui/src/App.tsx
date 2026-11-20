@@ -129,6 +129,9 @@ function AppLayout() {
             >
               Home
             </MuiLink>
+            <MuiLink component={Link} to="/repositories" underline="none">
+              Repositories
+            </MuiLink>
             <MuiLink component={Link} to="/component-preview" underline="none">
               Component preview
             </MuiLink>
@@ -161,8 +164,8 @@ function HomePage() {
         <Typography color="text.secondary">
           Review security checks across repositories in the NOMAD ecosystem.
         </Typography>
-        <Button component={Link} to="/component-preview" variant="contained">
-          Open component preview
+        <Button component={Link} to="/repositories" variant="contained">
+          Manage repositories
         </Button>
       </Stack>
     </Paper>
@@ -175,6 +178,14 @@ const homeRoute = createRoute({
   path: '/',
   component: HomePage,
 })
+const repositoriesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/repositories',
+  component: lazyRouteComponent(
+    () => import('./RepositoriesPage'),
+    'RepositoriesPage',
+  ),
+})
 const previewRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/component-preview',
@@ -185,7 +196,7 @@ const previewRoute = createRoute({
 })
 
 export const router = createRouter({
-  routeTree: rootRoute.addChildren([homeRoute, previewRoute]),
+  routeTree: rootRoute.addChildren([homeRoute, repositoriesRoute, previewRoute]),
 })
 
 declare module '@tanstack/react-router' {
