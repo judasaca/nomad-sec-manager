@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse
 from pymongo import AsyncMongoClient
 from pymongo.errors import ConnectionFailure
 
+from .analysis import AnalysisStore
+from .analysis import router as analysis_router
 from .github import GitHubError
 from .repositories import router
 
@@ -22,11 +24,14 @@ async def lifespan(app: FastAPI):
     ) as client:
         app.state.repositories = client[database].repositories
         await app.state.repositories.create_index("github_id", unique=True)
-        yield
+        app.state.analysis = AnalysisStore(client[database])
+        async with app.state.analysis.worker():
+            yield
 
 
 app = FastAPI(title="NOMAD Security Manager", lifespan=lifespan)
 app.include_router(router)
+app.include_router(analysis_router)
 
 
 @app.exception_handler(GitHubError)
