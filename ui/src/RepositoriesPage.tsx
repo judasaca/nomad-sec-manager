@@ -16,10 +16,12 @@ import {
   Typography,
 } from '@mui/material'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { createLink } from '@tanstack/react-router'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { repositoriesApi, type Repository } from './repositoriesApi'
 
 const repositoriesKey = ['repositories']
+const RoutedButton = createLink(Button)
 const dateFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -82,6 +84,13 @@ function RepositoryCard({
             )}
           </Box>
           <Stack direction="row" useFlexGap sx={{ gap: 0.5, flexWrap: 'wrap', flexShrink: 0 }}>
+            <RoutedButton
+              size="small"
+              to="/repositories/$repositoryId/analysis"
+              params={{ repositoryId: repository.id }}
+            >
+              Static analysis
+            </RoutedButton>
             <Button size="small" onClick={onRefresh} disabled={refreshDisabled}>
               {refreshing ? 'Refreshing…' : 'Refresh'}
             </Button>

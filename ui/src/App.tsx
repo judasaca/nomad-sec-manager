@@ -107,6 +107,7 @@ function AppLayout() {
               width: { xs: '100%', sm: 'auto' },
               alignSelf: 'stretch',
               flex: { sm: 1 },
+              flexWrap: 'wrap',
               '& a': {
                 color: 'text.secondary',
                 display: 'inline-flex',
@@ -131,6 +132,9 @@ function AppLayout() {
             </MuiLink>
             <MuiLink component={Link} to="/repositories" underline="none">
               Repositories
+            </MuiLink>
+            <MuiLink component={Link} to="/global-runs" underline="none">
+              Global runs
             </MuiLink>
             <MuiLink component={Link} to="/component-preview" underline="none">
               Component preview
@@ -194,9 +198,31 @@ const previewRoute = createRoute({
     'ComponentPreview',
   ),
 })
+const repositoryAnalysisRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/repositories/$repositoryId/analysis',
+  component: lazyRouteComponent(() => import('./AnalysisPages'), 'RepositoryAnalysisPage'),
+})
+const globalRunsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/global-runs',
+  component: lazyRouteComponent(() => import('./AnalysisPages'), 'GlobalRunsPage'),
+})
+const globalRunRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/global-runs/$runId',
+  component: lazyRouteComponent(() => import('./AnalysisPages'), 'GlobalRunPage'),
+})
 
 export const router = createRouter({
-  routeTree: rootRoute.addChildren([homeRoute, repositoriesRoute, previewRoute]),
+  routeTree: rootRoute.addChildren([
+    homeRoute,
+    repositoriesRoute,
+    repositoryAnalysisRoute,
+    globalRunsRoute,
+    globalRunRoute,
+    previewRoute,
+  ]),
 })
 
 declare module '@tanstack/react-router' {

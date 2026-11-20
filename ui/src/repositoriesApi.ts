@@ -1,3 +1,5 @@
+import { request, requestJson } from './api'
+
 export type Repository = {
   id: string
   github_id: number
@@ -18,34 +20,6 @@ export type Repository = {
 
 const repositoriesUrl = '/api/repositories'
 
-async function request(path: string, options?: RequestInit): Promise<Response> {
-  let response: Response
-  try {
-    response = await fetch(path, options)
-  } catch (error) {
-    if (options?.signal?.aborted) throw error
-    throw new Error('Could not connect to the repository service.')
-  }
-
-  if (!response.ok) {
-    const problem = await response.json().catch(() => null)
-    const detail = Array.isArray(problem?.detail)
-      ? problem.detail[0]?.msg?.replace(/^Value error, /, '')
-      : problem?.detail
-    throw new Error(
-      typeof detail === 'string'
-        ? detail
-        : 'The repository service could not complete the request.',
-    )
-  }
-
-  return response
-}
-
-async function requestJson<T>(path: string, options?: RequestInit): Promise<T> {
-  return (await request(path, options)).json()
-}
-
 function saveRepository(method: 'POST' | 'PATCH', path: string, url?: string) {
   return requestJson<Repository>(path, {
     method,
@@ -57,6 +31,8 @@ function saveRepository(method: 'POST' | 'PATCH', path: string, url?: string) {
 export const repositoriesApi = {
   list: (signal: AbortSignal) =>
     requestJson<Repository[]>(repositoriesUrl, { signal }),
+  get: (id: string, signal: AbortSignal) =>
+    requestJson<Repository>(`${repositoriesUrl}/${id}`, { signal }),
   create: (url: string) => saveRepository('POST', repositoriesUrl, url),
   update: (id: string, url?: string) =>
     saveRepository('PATCH', `${repositoriesUrl}/${id}`, url),
