@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from .github import RepositoryMetadata, fetch_repository, normalize_repository_url
 
 router = APIRouter(prefix="/api/repositories", tags=["repositories"])
+visible_repository = {"deleting": {"$ne": True}}
 
 RepositoryURL = Annotated[
     str, StringConstraints(max_length=500), AfterValidator(normalize_repository_url)
@@ -54,7 +55,7 @@ def repository_id(value: str) -> ObjectId:
 
 
 async def find_repository(collection: AsyncCollection, id: ObjectId) -> dict:
-    document = await collection.find_one({"_id": id})
+    document = await collection.find_one({"_id": id, **visible_repository})
     if document is None:
         raise HTTPException(404, "Saved repository not found.")
     return document
@@ -64,7 +65,9 @@ async def find_repository(collection: AsyncCollection, id: ObjectId) -> dict:
 async def list_repositories(collection: Collection) -> list[Repository]:
     return [
         Repository.from_document(document)
-        async for document in collection.find().sort([("created_at", -1), ("_id", -1)])
+        async for document in collection.find(visible_repository).sort(
+            [("created_at", -1), ("_id", -1)]
+        )
     ]
 
 
@@ -105,6 +108,7 @@ async def update_repository(
         updated = await collection.find_one_and_update(
             {
                 "_id": object_id,
+                **visible_repository,
                 "github_id": current["github_id"],
                 "metadata_updated_at": current["metadata_updated_at"],
             },
@@ -120,8 +124,6 @@ async def update_repository(
 
 
 @router.delete("/{id}", status_code=204)
-async def delete_repository(id: str, collection: Collection) -> Response:
-    result = await collection.delete_one({"_id": repository_id(id)})
-    if result.deleted_count == 0:
-        raise HTTPException(404, "Saved repository not found.")
+async def delete_repository(id: str, request: Request) -> Response:
+    await request.app.state.analysis.delete_repository(repository_id(id))
     return Response(status_code=204)

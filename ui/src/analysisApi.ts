@@ -1,4 +1,4 @@
-import { requestJson } from './api'
+import { request, requestJson } from './api'
 
 export const severities = ['high', 'medium', 'low', 'informational'] as const
 export type Severity = typeof severities[number]
@@ -51,6 +51,8 @@ type GlobalRunDetails = GlobalRun & {
 
 const globalRunsUrl = '/api/global-runs'
 const historyUrl = (id: string) => `/api/repositories/${id}/analysis-results`
+export const globalRunsKey = ['global-runs']
+export const analysisHistoryKey = ['analysis-history']
 
 export const analysisApi = {
   start: (id: string) => requestJson<AnalysisSummary>(historyUrl(id), { method: 'POST' }),
@@ -62,6 +64,9 @@ export const analysisApi = {
   globalRuns: (signal: AbortSignal) => requestJson<GlobalRun[]>(globalRunsUrl, { signal }),
   globalRun: (id: string, signal: AbortSignal) =>
     requestJson<GlobalRunDetails>(`${globalRunsUrl}/${id}`, { signal }),
+  async deleteGlobal(id: string) {
+    await request(`${globalRunsUrl}/${id}`, { method: 'DELETE' })
+  },
 }
 
 export function isActive(result: AnalysisSummary) {

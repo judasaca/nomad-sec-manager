@@ -7,6 +7,7 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
+  DialogContentText,
   DialogTitle,
   Link,
   Paper,
@@ -24,10 +25,9 @@ import type { Theme } from '@mui/material/styles'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink, useNavigate, useParams } from '@tanstack/react-router'
 import { useId, useState } from 'react'
-import { analysisApi, isActive, severities, type AnalysisSummary, type Severity } from './analysisApi'
+import { analysisApi, analysisHistoryKey, globalRunsKey, isActive, severities, type AnalysisSummary, type GlobalRun, type Severity } from './analysisApi'
 import { repositoriesApi } from './repositoriesApi'
 
-const globalRunsKey = ['global-runs']
 const RoutedLink = createLink(Link)
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
@@ -376,7 +376,7 @@ export function GlobalRunsPage() {
         <TableContainer component={Paper} variant="outlined">
           <Table size="small" aria-label="Global runs">
             <TableHead>
-              <TableRow><TableCell>Started</TableCell><TableCell align="right">Repositories</TableCell></TableRow>
+              <TableRow><TableCell>Started</TableCell><TableCell align="right">Repositories at launch</TableCell></TableRow>
             </TableHead>
             <TableBody>
               {runs.data.map((run) => (
@@ -399,12 +399,37 @@ export function GlobalRunsPage() {
 
 export function GlobalRunPage() {
   const { runId } = useParams({ from: '/global-runs/$runId' })
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const runKey = [...globalRunsKey, runId]
   const run = useQuery({
-    queryKey: [...globalRunsKey, runId],
+    queryKey: runKey,
     queryFn: ({ signal }) => analysisApi.globalRun(runId, signal),
     refetchInterval: (query) => query.state.data?.results.some(isActive) ? 1500 : false,
   })
   const data = run.data
+  const remaining = data?.results.length ?? 0
+  const removed = data ? data.repository_count - remaining : 0
+  const remove = useMutation({
+    mutationFn: () => analysisApi.deleteGlobal(runId),
+    onSuccess: async () => {
+      queryClient.setQueryData<GlobalRun[]>(globalRunsKey, (runs) => runs?.filter(({ id }) => id !== runId))
+      queryClient.setQueriesData<AnalysisSummary[]>({ queryKey: analysisHistoryKey }, (history) =>
+        history?.filter((result) => result.global_run_id !== runId),
+      )
+      for (const result of data?.results ?? []) {
+        queryClient.removeQueries({ queryKey: ['analysis-result', result.id], exact: true })
+      }
+      setConfirmDelete(false)
+      await navigate({ to: '/global-runs', replace: true })
+      queryClient.removeQueries({ queryKey: runKey, exact: true })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: globalRunsKey, exact: true }),
+        queryClient.invalidateQueries({ queryKey: analysisHistoryKey }),
+      ])
+    },
+  })
   const counts = { high: 0, medium: 0, low: 0, informational: 0 }
   for (const result of data?.results ?? []) {
     for (const severity of severities) counts[severity] += result.counts[severity]
@@ -412,24 +437,67 @@ export function GlobalRunPage() {
 
   return (
     <Stack spacing={3}>
-      <Box>
-        <RoutedLink to="/global-runs">Global runs</RoutedLink>
-        <Typography variant="h1" sx={{ mt: 0.5 }}>Global run</Typography>
-        {data && <Typography color="text.secondary"><RunDate value={data.created_at} /></Typography>}
-      </Box>
+      <Stack direction="row" useFlexGap sx={{ justifyContent: 'space-between', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
+        <Box>
+          <RoutedLink to="/global-runs">Global runs</RoutedLink>
+          <Typography variant="h1" sx={{ mt: 0.5 }}>Global run</Typography>
+          {data && <Typography color="text.secondary"><RunDate value={data.created_at} /></Typography>}
+        </Box>
+        {data && !run.error && (
+          <Button variant="outlined" color="error" onClick={() => {
+            remove.reset()
+            setConfirmDelete(true)
+          }}>
+            Delete global run
+          </Button>
+        )}
+      </Stack>
       {run.isPending && <CircularProgress size={28} aria-label="Loading global run" />}
       {run.error && <Alert severity="error">{run.error.message}</Alert>}
       {data && (
         <>
           <Stack direction="row" useFlexGap sx={{ gap: 1, flexWrap: 'wrap' }} role="status">
-            <Chip label={`${data.results.filter((result) => !isActive(result)).length} of ${data.repository_count} finished`} />
+            {remaining > 0 && <Chip label={`${data.results.filter((result) => !isActive(result)).length} of ${remaining} finished`} />}
             <Chip color="success" label={`${data.clean_count} clean`} />
             <Chip color="warning" label={`${data.results.filter((result) => severities.some((severity) => result.counts[severity] > 0)).length} with findings`} />
             <Chip label={`${data.results.filter((result) => result.status === 'failed' || result.status === 'not_evaluated').length} incomplete`} />
+            {removed > 0 && <Chip label={`${removed} ${removed === 1 ? 'report' : 'reports'} removed`} />}
           </Stack>
-          <SeverityOverview counts={counts} />
-          <ResultsTable key={data.id} results={data.results} global />
+          {remaining > 0 ? (
+            <>
+              <SeverityOverview counts={counts} />
+              <ResultsTable key={data.id} results={data.results} global />
+            </>
+          ) : (
+            <Typography color="text.secondary">No reports remain for this run.</Typography>
+          )}
         </>
+      )}
+      {confirmDelete && (
+        <Dialog
+          open
+          fullWidth
+          maxWidth="sm"
+          onClose={remove.isPending ? undefined : () => setConfirmDelete(false)}
+          aria-labelledby="delete-global-run-title"
+          aria-describedby="delete-global-run-description"
+        >
+          <DialogTitle id="delete-global-run-title">Delete global run?</DialogTitle>
+          <DialogContent>
+            <Stack spacing={2}>
+              {remove.error && <Alert severity="error">{remove.error.message}</Alert>}
+              <DialogContentText id="delete-global-run-description">
+                This permanently deletes the run and all of its reports from repository histories.
+              </DialogContentText>
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button autoFocus disabled={remove.isPending} onClick={() => setConfirmDelete(false)}>Cancel</Button>
+            <Button variant="contained" color="error" loading={remove.isPending} onClick={() => remove.mutate()}>
+              Delete global run
+            </Button>
+          </DialogActions>
+        </Dialog>
       )}
     </Stack>
   )
@@ -438,7 +506,7 @@ export function GlobalRunPage() {
 export function RepositoryAnalysisPage() {
   const { repositoryId } = useParams({ from: '/repositories/$repositoryId/analysis' })
   const queryClient = useQueryClient()
-  const historyKey = ['analysis-history', repositoryId]
+  const historyKey = [...analysisHistoryKey, repositoryId]
   const repository = useQuery({
     queryKey: ['repositories', repositoryId],
     queryFn: ({ signal }) => repositoriesApi.get(repositoryId, signal),

@@ -18,6 +18,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink } from '@tanstack/react-router'
 import { useState, type FormEvent, type ReactNode } from 'react'
+import { analysisHistoryKey, globalRunsKey } from './analysisApi'
 import { repositoriesApi, type Repository } from './repositoriesApi'
 
 const repositoriesKey = ['repositories']
@@ -161,6 +162,12 @@ function RepositoryEditor({ dialog, onClose }: { dialog: RepositoryDialog; onClo
       }
     },
     onSuccess: async () => {
+      if (dialog.type === 'remove') {
+        const { id } = dialog.repository
+        queryClient.removeQueries({ queryKey: [...repositoriesKey, id] })
+        queryClient.removeQueries({ queryKey: [...analysisHistoryKey, id] })
+        await queryClient.invalidateQueries({ queryKey: globalRunsKey })
+      }
       await queryClient.invalidateQueries({ queryKey: repositoriesKey })
       onClose()
     },
@@ -187,7 +194,8 @@ function RepositoryEditor({ dialog, onClose }: { dialog: RepositoryDialog; onClo
             {save.error && <Alert severity="error">{save.error.message}</Alert>}
             {removing ? (
               <DialogContentText id="repository-delete-description">
-                Remove <strong>{dialog.repository.full_name}</strong> from the saved repositories?
+                Permanently delete <strong>{dialog.repository.full_name}</strong> from the saved repositories
+                and delete all of its static analysis reports?
               </DialogContentText>
             ) : (
               <TextField
