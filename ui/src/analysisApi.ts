@@ -30,7 +30,12 @@ type Finding = {
 }
 
 export type AnalysisResult = AnalysisSummary & {
-  steps: { name: string; message: string; findings: Finding[] }[]
+  steps: {
+    name: string
+    status: 'passed' | 'findings' | 'skipped' | 'not_evaluated' | 'error'
+    message: string
+    findings: Finding[]
+  }[]
 }
 
 export type GlobalRun = {

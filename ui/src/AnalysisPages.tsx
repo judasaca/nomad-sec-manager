@@ -20,9 +20,10 @@ import {
   TableSortLabel,
   Typography,
 } from '@mui/material'
+import type { Theme } from '@mui/material/styles'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink, useNavigate, useParams } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { analysisApi, isActive, severities, type AnalysisSummary, type Severity } from './analysisApi'
 import { repositoriesApi } from './repositoriesApi'
 
@@ -35,6 +36,83 @@ const severityLabels: Record<Severity, string> = {
   medium: 'Medium',
   low: 'Low',
   informational: 'Informational',
+}
+
+const severityColors: Record<Severity, string> = {
+  high: 'error.main',
+  medium: 'warning.main',
+  low: '#826100',
+  informational: 'info.main',
+}
+
+const severityFills = {
+  high: { light: '#C81E35', lightText: '#FFF', dark: '#F04454' },
+  medium: { light: '#D35410', lightText: '#111', dark: '#FB923C' },
+  low: { light: '#B47A00', lightText: '#111', dark: '#FACC15' },
+  informational: { light: '#0575B5', lightText: '#FFF', dark: '#38BDF8' },
+} satisfies Record<Severity, { light: string; lightText: string; dark: string }>
+
+function severityFill(severity: Severity) {
+  const fill = severityFills[severity]
+  return (theme: Theme) => ({
+    backgroundColor: fill.light,
+    color: fill.lightText,
+    ...theme.applyStyles('dark', { backgroundColor: fill.dark, color: '#111' }),
+  })
+}
+
+function severityTone(severity: Severity) {
+  return (theme: Theme) => ({
+    color: severityColors[severity],
+    ...(severity === 'low' && theme.applyStyles('dark', { color: '#FFE082' })),
+  })
+}
+
+function SeverityTag({ severity, count }: { severity: Severity; count?: number }) {
+  const label = severityLabels[severity]
+  return (
+    <Chip
+      size="small"
+      variant="outlined"
+      label={count === undefined ? label : `${label} ${count.toLocaleString()}`}
+      sx={[severityTone(severity), { borderColor: 'currentColor' }]}
+    />
+  )
+}
+
+function totalFindings(counts: AnalysisSummary['counts']) {
+  return severities.reduce((total, severity) => total + counts[severity], 0)
+}
+
+function SeverityOverview({ counts }: { counts: AnalysisSummary['counts'] }) {
+  const total = totalFindings(counts)
+  return (
+    <Paper component="section" aria-label="Findings by severity" variant="outlined" sx={{ p: 2 }}>
+      <Stack spacing={1.5}>
+        <Stack direction="row" useFlexGap sx={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
+          <Typography variant="h3" component="h2">Findings by severity</Typography>
+          <Typography color="text.secondary">
+            {total.toLocaleString()} {total === 1 ? 'finding' : 'findings'} total
+          </Typography>
+        </Stack>
+        {total > 0 && (
+          <Box aria-hidden sx={{ display: 'flex', gap: '2px', height: 14, borderRadius: 1, overflow: 'hidden' }}>
+            {severities.filter((severity) => counts[severity] > 0).map((severity) => (
+              <Box
+                key={severity}
+                sx={[severityFill(severity), { flex: counts[severity] }]}
+              />
+            ))}
+          </Box>
+        )}
+        <Stack direction="row" useFlexGap sx={{ gap: 1, flexWrap: 'wrap' }}>
+          {severities.map((severity) => (
+            <SeverityTag key={severity} severity={severity} count={counts[severity]} />
+          ))}
+        </Stack>
+      </Stack>
+    </Paper>
+  )
 }
 
 const statusLabels: Record<AnalysisSummary['status'], string> = {
@@ -63,57 +141,78 @@ function ResultStatus({ result }: { result: AnalysisSummary }) {
   return <Chip size="small" label={statusLabels[result.status]} color={color[result.status]} />
 }
 
-function ResultDialog({ id, onClose }: { id: string; onClose: () => void }) {
-  const result = useQuery({
-    queryKey: ['analysis-result', id],
-    queryFn: ({ signal }) => analysisApi.result(id, signal),
-    refetchInterval: (query) => query.state.data && isActive(query.state.data) ? 1500 : false,
+function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: () => void }) {
+  const [showFindings, setShowFindings] = useState(false)
+  const findingsId = useId()
+  const incomplete = result.status === 'failed' || result.status === 'not_evaluated'
+  const hasFindings = totalFindings(result.counts) > 0
+  const needsDiagnostic = incomplete && !result.error
+  const report = useQuery({
+    queryKey: ['analysis-result', result.id],
+    queryFn: ({ signal }) => analysisApi.result(result.id, signal),
+    enabled: showFindings || needsDiagnostic,
   })
-  const data = result.data
 
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="md" aria-labelledby="analysis-result-title">
-      <DialogTitle id="analysis-result-title">{data?.repository_name ?? 'Analysis result'}</DialogTitle>
+      <DialogTitle id="analysis-result-title">{result.repository_name}</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2}>
-          {result.isPending && <CircularProgress size={24} aria-label="Loading analysis result" />}
-          {result.error && <Alert severity="error">{result.error.message}</Alert>}
-          {data && (
-            <>
-              <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
-                <ResultStatus result={data} />
-                <Typography color="text.secondary"><RunDate value={data.created_at} /></Typography>
-                {data.branch && <Typography>{data.branch}</Typography>}
-                {data.commit && <code>{data.commit}</code>}
-              </Stack>
-              {data.error && <Alert severity="error">{data.error}</Alert>}
-              {isActive(data) && (
-                <Typography color="text.secondary">The report will appear when the scan finishes.</Typography>
-              )}
-              {data.steps.map((step) => (
-                <Stack key={step.name} spacing={1}>
-                  <Typography variant="h3" component="h3">{step.name === 'ci-cd' ? 'CI/CD' : step.name}</Typography>
-                  <Typography>{step.message}</Typography>
-                  {step.findings.map((finding, index) => (
-                    <Paper key={index} variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
-                      <Stack spacing={0.75}>
-                        <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-                          <Chip size="small" label={severityLabels[finding.severity]} />
-                          <Typography sx={{ fontWeight: 700 }}>{finding.rule_id}</Typography>
-                        </Stack>
-                        <Typography component="code" variant="body2">
-                          {finding.file}:{finding.line}:{finding.column}
-                        </Typography>
-                        <Typography>{finding.message}</Typography>
-                        {finding.evidence && <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{finding.evidence}</Typography>}
-                        {finding.remediation && <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{finding.remediation}</Typography>}
-                      </Stack>
-                    </Paper>
-                  ))}
-                </Stack>
-              ))}
-            </>
+          <Stack direction="row" useFlexGap sx={{ gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+            <ResultStatus result={result} />
+            <Typography color="text.secondary"><RunDate value={result.created_at} /></Typography>
+            {result.branch && <Typography>{result.branch}</Typography>}
+            {result.commit && <code>{result.commit}</code>}
+          </Stack>
+          {result.error && <Alert severity="error">{result.error}</Alert>}
+          {isActive(result) && (
+            <Typography color="text.secondary">The report will appear when the scan finishes.</Typography>
           )}
+          {(result.status === 'clean' || hasFindings) && <SeverityOverview counts={result.counts} />}
+          {needsDiagnostic && report.data?.steps
+            .filter((step) => step.status === 'error' || step.status === 'not_evaluated' || step.status === 'skipped')
+            .map((step) => <Alert key={step.name} severity={step.status === 'error' ? 'error' : 'warning'}>{step.message}</Alert>)}
+          {hasFindings && (
+            <Button
+              sx={{ alignSelf: 'flex-start' }}
+              aria-controls={findingsId}
+              aria-expanded={showFindings}
+              onClick={() => setShowFindings((shown) => !shown)}
+            >
+              {showFindings ? 'Hide finding details' : 'Show finding details'}
+            </Button>
+          )}
+          {(showFindings || needsDiagnostic) && report.isPending && (
+            <CircularProgress size={24} aria-label="Loading report details" />
+          )}
+          {(showFindings || needsDiagnostic) && report.error && <Alert severity="error">{report.error.message}</Alert>}
+          <Box id={findingsId} hidden={!showFindings}>
+            {showFindings && (
+              <Stack spacing={2}>
+                {report.data?.steps.filter((step) => step.findings.length > 0).map((step) => (
+                  <Stack key={step.name} spacing={1}>
+                    <Typography variant="h3" component="h3">{step.name === 'ci-cd' ? 'CI/CD' : step.name}</Typography>
+                    {step.findings.map((finding, index) => (
+                      <Paper key={index} variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
+                        <Stack spacing={0.75}>
+                          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                            <SeverityTag severity={finding.severity} />
+                            <Typography sx={{ fontWeight: 700 }}>{finding.rule_id}</Typography>
+                          </Stack>
+                          <Typography component="code" variant="body2">
+                            {finding.file}:{finding.line}:{finding.column}
+                          </Typography>
+                          <Typography>{finding.message}</Typography>
+                          {finding.evidence && <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{finding.evidence}</Typography>}
+                          {finding.remediation && <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{finding.remediation}</Typography>}
+                        </Stack>
+                      </Paper>
+                    ))}
+                  </Stack>
+                ))}
+              </Stack>
+            )}
+          </Box>
         </Stack>
       </DialogContent>
       <DialogActions><Button onClick={onClose}>Close</Button></DialogActions>
@@ -125,6 +224,7 @@ type SortColumn = 'repository_name' | 'status' | Severity
 
 function ResultsTable({ results, global = false }: { results: AnalysisSummary[]; global?: boolean }) {
   const [selectedResult, setSelectedResult] = useState<string | null>(null)
+  const selection = results.find(({ id }) => id === selectedResult)
   const [sort, setSort] = useState<{ column: SortColumn; direction: 'asc' | 'desc' }>({
     column: 'repository_name',
     direction: 'asc',
@@ -193,13 +293,36 @@ function ResultsTable({ results, global = false }: { results: AnalysisSummary[];
                   )}
                 </TableCell>
                 <TableCell><ResultStatus result={result} /></TableCell>
-                {severities.map((severity) => (
-                  <TableCell key={severity} align="right">
-                    {isActive(result) || ((result.status === 'failed' || result.status === 'not_evaluated') && !result.counts[severity])
-                      ? '—'
-                      : result.counts[severity]}
-                  </TableCell>
-                ))}
+                {severities.map((severity) => {
+                  const count = result.counts[severity]
+                  const unavailable = isActive(result)
+                    || ((result.status === 'failed' || result.status === 'not_evaluated') && count === 0)
+                  return (
+                    <TableCell
+                      key={severity}
+                      align="right"
+                      sx={!global && count > 0 ? [severityTone(severity), { fontWeight: 700 }] : undefined}
+                    >
+                      {unavailable ? '—' : global && count > 0 ? (
+                        <Box
+                          component="span"
+                          sx={[severityFill(severity), {
+                            display: 'inline-block',
+                            minWidth: 32,
+                            px: 1,
+                            py: 0.25,
+                            borderRadius: 1,
+                            textAlign: 'center',
+                            fontWeight: 700,
+                            fontVariantNumeric: 'tabular-nums',
+                          }]}
+                        >
+                          {count.toLocaleString()}
+                        </Box>
+                      ) : count}
+                    </TableCell>
+                  )
+                })}
                 {!global && (
                   <TableCell>
                     {result.global_run_id ? (
@@ -217,7 +340,7 @@ function ResultsTable({ results, global = false }: { results: AnalysisSummary[];
           </TableBody>
         </Table>
       </TableContainer>
-      {selectedResult && <ResultDialog id={selectedResult} onClose={() => setSelectedResult(null)} />}
+      {selection && <ResultDialog key={selection.id} result={selection} onClose={() => setSelectedResult(null)} />}
     </>
   )
 }
@@ -282,6 +405,10 @@ export function GlobalRunPage() {
     refetchInterval: (query) => query.state.data?.results.some(isActive) ? 1500 : false,
   })
   const data = run.data
+  const counts = { high: 0, medium: 0, low: 0, informational: 0 }
+  for (const result of data?.results ?? []) {
+    for (const severity of severities) counts[severity] += result.counts[severity]
+  }
 
   return (
     <Stack spacing={3}>
@@ -300,6 +427,7 @@ export function GlobalRunPage() {
             <Chip color="warning" label={`${data.results.filter((result) => severities.some((severity) => result.counts[severity] > 0)).length} with findings`} />
             <Chip label={`${data.results.filter((result) => result.status === 'failed' || result.status === 'not_evaluated').length} incomplete`} />
           </Stack>
+          <SeverityOverview counts={counts} />
           <ResultsTable key={data.id} results={data.results} global />
         </>
       )}
