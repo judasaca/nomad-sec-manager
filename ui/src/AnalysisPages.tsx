@@ -74,8 +74,17 @@ function SeverityTag({ severity, count }: { severity: Severity; count?: number }
     <Chip
       size="small"
       variant="outlined"
-      label={count === undefined ? label : `${label} ${count.toLocaleString()}`}
-      sx={[severityTone(severity), { borderColor: 'currentColor' }]}
+      label={(
+        <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.75, lineHeight: 1.25 }}>
+          <Box
+            component="span"
+            aria-hidden
+            sx={[severityFill(severity), { width: 10, height: 10, flexShrink: 0, borderRadius: '50%' }]}
+          />
+          {count === undefined ? label : `${label} ${count.toLocaleString()}`}
+        </Box>
+      )}
+      sx={{ bgcolor: 'background.paper', color: 'text.primary' }}
     />
   )
 }
