@@ -78,6 +78,12 @@ class GlobalRun(BaseModel):
         return cls(id=str(document["_id"]), **document)
 
 
+class GlobalRunSummary(GlobalRun):
+    active_count: int = 0
+    evaluated_count: int = 0
+    counts: SeverityCounts | None = None
+
+
 class GlobalRunDetails(GlobalRun):
     clean_count: int
     results: list[AnalysisSummary]
@@ -168,8 +174,7 @@ class AnalysisStore:
         }
 
     @staticmethod
-    def published_results() -> list[dict]:
-        # The group document publishes all of its results together on standalone MongoDB.
+    def results_for_visible_repositories() -> list[dict]:
         return [
             {
                 "$lookup": {
@@ -184,6 +189,14 @@ class AnalysisStore:
                 }
             },
             {"$match": {"_repository.0": {"$exists": True}}},
+            {"$unset": "_repository"},
+        ]
+
+    @classmethod
+    def published_results(cls) -> list[dict]:
+        # The group document publishes all of its results together on standalone MongoDB.
+        return [
+            *cls.results_for_visible_repositories(),
             {
                 "$lookup": {
                     "from": "global_runs",
@@ -198,7 +211,7 @@ class AnalysisStore:
                     "$or": [{"global_run_id": None}, {"_group.0": {"$exists": True}}]
                 }
             },
-            {"$unset": ["_group", "_repository"]},
+            {"$unset": "_group"},
         ]
 
     async def process_queue(self) -> None:
@@ -373,13 +386,72 @@ async def start_global_run(store: Store) -> GlobalRun:
 
 
 @router.get("/global-runs")
-async def list_global_runs(store: Store) -> list[GlobalRun]:
-    return [
-        GlobalRun.from_document(group)
-        async for group in store.global_runs.find({"deleting": {"$ne": True}}).sort(
-            [("created_at", -1), ("_id", -1)]
+async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
+    severities = SeverityCounts.model_fields
+    cursor = await store.global_runs.aggregate(
+        [
+            {"$match": {"deleting": {"$ne": True}}},
+            {"$sort": {"created_at": -1, "_id": -1}},
+            {
+                "$lookup": {
+                    "from": "analysis_results",
+                    "localField": "_id",
+                    "foreignField": "global_run_id",
+                    "pipeline": [
+                        {"$project": {"repository_id": 1, "status": 1, "counts": 1}},
+                        *store.results_for_visible_repositories(),
+                        {
+                            "$group": {
+                                "_id": None,
+                                "active_count": {
+                                    "$sum": {
+                                        "$cond": [
+                                            {"$in": ["$status", ["queued", "running"]]},
+                                            1,
+                                            0,
+                                        ]
+                                    }
+                                },
+                                "evaluated_count": {
+                                    "$sum": {
+                                        "$cond": [
+                                            {"$in": ["$status", ["clean", "findings"]]},
+                                            1,
+                                            0,
+                                        ]
+                                    }
+                                },
+                                **{
+                                    severity: {"$sum": f"$counts.{severity}"}
+                                    for severity in severities
+                                },
+                            }
+                        },
+                    ],
+                    "as": "report_totals",
+                }
+            },
+        ]
+    )
+    runs = []
+    async for group in cursor:
+        totals = next(iter(group.pop("report_totals")), {})
+        counts = {severity: totals.get(severity, 0) for severity in severities}
+        active_count = totals.get("active_count", 0)
+        evaluated_count = totals.get("evaluated_count", 0)
+        runs.append(
+            GlobalRunSummary.from_document(
+                {
+                    **group,
+                    "active_count": active_count,
+                    "evaluated_count": evaluated_count,
+                    "counts": counts
+                    if not active_count and (evaluated_count or any(counts.values()))
+                    else None,
+                }
+            )
         )
-    ]
+    return runs
 
 
 @router.get("/global-runs/{id}")

@@ -25,40 +25,19 @@ import type { Theme } from '@mui/material/styles'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink, useNavigate, useParams } from '@tanstack/react-router'
 import { useId, useState } from 'react'
-import { analysisApi, analysisHistoryKey, globalRunsKey, isActive, severities, type AnalysisSummary, type GlobalRun, type Severity } from './analysisApi'
+import { analysisApi, analysisHistoryKey, globalRunsKey, isActive, severities, type AnalysisSummary, type GlobalRunSummary, type Severity } from './analysisApi'
+import { FindingsTrendPlot } from './FindingsTrendPlot'
 import { repositoriesApi } from './repositoriesApi'
+import { severityFill, severityLabels } from './severity'
 
 const RoutedLink = createLink(Link)
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-
-const severityLabels: Record<Severity, string> = {
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-  informational: 'Informational',
-}
 
 const severityColors: Record<Severity, string> = {
   high: 'error.main',
   medium: 'warning.main',
   low: '#826100',
   informational: 'info.main',
-}
-
-const severityFills = {
-  high: { light: '#C81E35', lightText: '#FFF', dark: '#F04454' },
-  medium: { light: '#D35410', lightText: '#111', dark: '#FB923C' },
-  low: { light: '#B47A00', lightText: '#111', dark: '#FACC15' },
-  informational: { light: '#0575B5', lightText: '#FFF', dark: '#38BDF8' },
-} satisfies Record<Severity, { light: string; lightText: string; dark: string }>
-
-function severityFill(severity: Severity) {
-  const fill = severityFills[severity]
-  return (theme: Theme) => ({
-    backgroundColor: fill.light,
-    color: fill.lightText,
-    ...theme.applyStyles('dark', { backgroundColor: fill.dark, color: '#111' }),
-  })
 }
 
 function severityTone(severity: Severity) {
@@ -354,12 +333,56 @@ function ResultsTable({ results, global = false }: { results: AnalysisSummary[];
   )
 }
 
+function FindingsTrend({ runs }: { runs: GlobalRunSummary[] }) {
+  const [selectedId, setSelectedId] = useState<string>()
+  const points = runs.flatMap((run) => run.counts ? [{ ...run, counts: run.counts }] : []).reverse()
+  const selected = points.find((run) => run.id === selectedId) ?? points.at(-1)
+
+  return (
+    <Paper component="section" aria-label="Findings over time" variant="outlined" sx={{ p: 2 }}>
+      <Stack spacing={1.5}>
+        <Typography variant="h3" component="h2">Findings over time</Typography>
+        {selected ? (
+          <>
+            <FindingsTrendPlot
+              points={points}
+              selectedIndex={points.indexOf(selected)}
+              onSelect={(index) => setSelectedId(points[index].id)}
+            />
+            <Stack direction="row" useFlexGap sx={{ gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Typography variant="body2" color="text.secondary">
+                <RunDate value={selected.created_at} />
+              </Typography>
+              {severities.map((severity) => (
+                <SeverityTag key={severity} severity={severity} count={selected.counts[severity]} />
+              ))}
+              {selected.evaluated_count < selected.repository_count && (
+                <Typography variant="body2" color="text.secondary">
+                  {selected.evaluated_count} of {selected.repository_count} repositories fully evaluated
+                </Typography>
+              )}
+            </Stack>
+            {points.some((run) => run.evaluated_count < run.repository_count) && (
+              <Typography variant="body2" color="text.secondary">
+                Totals from partially evaluated runs may reflect fewer repositories.
+              </Typography>
+            )}
+          </>
+        ) : (
+          <Typography color="text.secondary">Finding counts will appear when a global run has finished with usable results.</Typography>
+        )}
+      </Stack>
+    </Paper>
+  )
+}
+
 export function GlobalRunsPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const runs = useQuery({
     queryKey: globalRunsKey,
     queryFn: ({ signal }) => analysisApi.globalRuns(signal),
+    refetchInterval: (query) => query.state.data?.some((run) => run.active_count > 0) ? 1500 : false,
   })
   const start = useMutation({
     mutationFn: analysisApi.startGlobal,
@@ -381,6 +404,7 @@ export function GlobalRunsPage() {
       {runs.isPending && <CircularProgress size={28} aria-label="Loading global runs" />}
       {runs.error && <Alert severity="error">{runs.error.message}</Alert>}
       {runs.data?.length === 0 && <Typography color="text.secondary">No global runs yet.</Typography>}
+      {runs.data && <FindingsTrend runs={runs.data} />}
       {!!runs.data?.length && (
         <TableContainer component={Paper} variant="outlined">
           <Table size="small" aria-label="Global runs">
@@ -423,7 +447,7 @@ export function GlobalRunPage() {
   const remove = useMutation({
     mutationFn: () => analysisApi.deleteGlobal(runId),
     onSuccess: async () => {
-      queryClient.setQueryData<GlobalRun[]>(globalRunsKey, (runs) => runs?.filter(({ id }) => id !== runId))
+      queryClient.setQueryData<GlobalRunSummary[]>(globalRunsKey, (runs) => runs?.filter(({ id }) => id !== runId))
       queryClient.setQueriesData<AnalysisSummary[]>({ queryKey: analysisHistoryKey }, (history) =>
         history?.filter((result) => result.global_run_id !== runId),
       )

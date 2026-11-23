@@ -4,13 +4,15 @@ export const severities = ['high', 'medium', 'low', 'informational'] as const
 export type Severity = typeof severities[number]
 type ResultStatus = 'queued' | 'running' | 'clean' | 'findings' | 'not_evaluated' | 'failed'
 
+export type SeverityCounts = Record<Severity, number>
+
 export type AnalysisSummary = {
   id: string
   repository_id: string
   repository_name: string
   global_run_id: string | null
   status: ResultStatus
-  counts: Record<Severity, number>
+  counts: SeverityCounts
   branch: string | null
   commit: string | null
   error: string | null
@@ -44,6 +46,12 @@ export type GlobalRun = {
   repository_count: number
 }
 
+export type GlobalRunSummary = GlobalRun & {
+  active_count: number
+  evaluated_count: number
+  counts: SeverityCounts | null
+}
+
 type GlobalRunDetails = GlobalRun & {
   clean_count: number
   results: AnalysisSummary[]
@@ -61,7 +69,7 @@ export const analysisApi = {
   result: (id: string, signal: AbortSignal) =>
     requestJson<AnalysisResult>(`/api/analysis-results/${id}`, { signal }),
   startGlobal: () => requestJson<GlobalRun>(globalRunsUrl, { method: 'POST' }),
-  globalRuns: (signal: AbortSignal) => requestJson<GlobalRun[]>(globalRunsUrl, { signal }),
+  globalRuns: (signal: AbortSignal) => requestJson<GlobalRunSummary[]>(globalRunsUrl, { signal }),
   globalRun: (id: string, signal: AbortSignal) =>
     requestJson<GlobalRunDetails>(`${globalRunsUrl}/${id}`, { signal }),
   async deleteGlobal(id: string) {
