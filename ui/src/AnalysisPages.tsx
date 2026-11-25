@@ -2,6 +2,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -25,7 +26,7 @@ import type { Theme } from '@mui/material/styles'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink, useNavigate, useParams } from '@tanstack/react-router'
 import { useId, useState } from 'react'
-import { analysisApi, analysisHistoryKey, globalRunsKey, isActive, severities, type AnalysisSummary, type GlobalRunSummary, type Severity } from './analysisApi'
+import { analysisApi, analysisHistoryKey, globalRunsKey, isActive, severities, type AnalysisResult, type AnalysisSummary, type GlobalRunSummary, type Severity } from './analysisApi'
 import { FindingsTrendPlot } from './FindingsTrendPlot'
 import { repositoriesApi } from './repositoriesApi'
 import { severityFill, severityLabels } from './severity'
@@ -376,9 +377,24 @@ function FindingsTrend({ runs }: { runs: GlobalRunSummary[] }) {
   )
 }
 
+type GlobalRunSortColumn = 'created_at' | 'repository_count' | Severity
+
+function runSortValue(run: GlobalRunSummary, column: GlobalRunSortColumn) {
+  if (column === 'created_at') return Date.parse(run.created_at)
+  if (column === 'repository_count') return run.repository_count
+  return run.counts?.[column]
+}
+
 export function GlobalRunsPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const [sort, setSort] = useState<{ column: GlobalRunSortColumn; direction: 'asc' | 'desc' }>({
+    column: 'created_at',
+    direction: 'desc',
+  })
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [deleteIds, setDeleteIds] = useState<string[]>([])
+  const [deleteError, setDeleteError] = useState<string>()
   const runs = useQuery({
     queryKey: globalRunsKey,
     queryFn: ({ signal }) => analysisApi.globalRuns(signal),
@@ -391,6 +407,86 @@ export function GlobalRunsPage() {
       await navigate({ to: '/global-runs/$runId', params: { runId: run.id } })
     },
   })
+  const remove = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const deleted = new Set<string>()
+      const failed: string[] = []
+      let errorMessage = ''
+      for (const id of ids) {
+        try {
+          await analysisApi.deleteGlobal(id)
+          deleted.add(id)
+        } catch (error) {
+          failed.push(id)
+          errorMessage = error instanceof Error ? error.message : 'The backend could not complete the request.'
+        }
+      }
+      return { deleted, failed, errorMessage }
+    },
+    onSuccess: async ({ deleted, failed, errorMessage }) => {
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: globalRunsKey, exact: true }),
+        queryClient.cancelQueries({ queryKey: analysisHistoryKey }),
+      ])
+      queryClient.setQueryData<GlobalRunSummary[]>(globalRunsKey, (data) =>
+        data?.filter((run) => !deleted.has(run.id)),
+      )
+      queryClient.setQueriesData<AnalysisSummary[]>({ queryKey: analysisHistoryKey }, (history) =>
+        history?.filter((result) => !result.global_run_id || !deleted.has(result.global_run_id)),
+      )
+      for (const id of deleted) {
+        queryClient.removeQueries({ queryKey: [...globalRunsKey, id], exact: true })
+      }
+      for (const [queryKey, result] of queryClient.getQueriesData<AnalysisResult>({ queryKey: ['analysis-result'] })) {
+        if (result?.global_run_id && deleted.has(result.global_run_id)) {
+          queryClient.removeQueries({ queryKey, exact: true })
+        }
+      }
+      setSelectedIds(failed)
+      setDeleteIds([])
+      setDeleteError(failed.length
+        ? `Could not delete ${failed.length} of ${deleted.size + failed.length} selected runs. ${errorMessage}`
+        : undefined)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: globalRunsKey, exact: true }),
+        queryClient.invalidateQueries({ queryKey: analysisHistoryKey }),
+      ])
+    },
+  })
+  const rows = [...(runs.data ?? [])].sort((a, b) => {
+    const valueA = runSortValue(a, sort.column)
+    const valueB = runSortValue(b, sort.column)
+    const newestFirst = Date.parse(b.created_at) - Date.parse(a.created_at)
+    if (valueA === undefined) return valueB === undefined ? newestFirst : 1
+    if (valueB === undefined) return -1
+    const comparison = sort.direction === 'asc' ? valueA - valueB : valueB - valueA
+    return comparison || newestFirst
+  })
+  const selection = new Set(selectedIds)
+  const selectedRuns = rows.filter((run) => selection.has(run.id))
+  const allSelected = rows.length > 0 && selectedRuns.length === rows.length
+
+  function heading(label: string, column: GlobalRunSortColumn) {
+    const active = sort.column === column
+    return (
+      <TableCell
+        key={column}
+        align={column === 'created_at' ? 'left' : 'right'}
+        sortDirection={active ? sort.direction : false}
+      >
+        <TableSortLabel
+          active={active}
+          direction={active ? sort.direction : 'desc'}
+          onClick={() => setSort({
+            column,
+            direction: active && sort.direction === 'desc' ? 'asc' : 'desc',
+          })}
+        >
+          {label}
+        </TableSortLabel>
+      </TableCell>
+    )
+  }
 
   return (
     <Stack spacing={3}>
@@ -401,30 +497,106 @@ export function GlobalRunsPage() {
         </Button>
       </Stack>
       {start.error && <Alert severity="error">{start.error.message}</Alert>}
+      {deleteError && <Alert severity="error" onClose={() => setDeleteError(undefined)}>{deleteError}</Alert>}
       {runs.isPending && <CircularProgress size={28} aria-label="Loading global runs" />}
       {runs.error && <Alert severity="error">{runs.error.message}</Alert>}
       {runs.data?.length === 0 && <Typography color="text.secondary">No global runs yet.</Typography>}
       {runs.data && <FindingsTrend runs={runs.data} />}
-      {!!runs.data?.length && (
-        <TableContainer component={Paper} variant="outlined">
-          <Table size="small" aria-label="Global runs">
-            <TableHead>
-              <TableRow><TableCell>Started</TableCell><TableCell align="right">Repositories at launch</TableCell></TableRow>
-            </TableHead>
-            <TableBody>
-              {runs.data.map((run) => (
-                <TableRow key={run.id}>
-                  <TableCell component="th" scope="row">
-                    <RoutedLink to="/global-runs/$runId" params={{ runId: run.id }}>
-                      <RunDate value={run.created_at} />
-                    </RoutedLink>
+      {rows.length > 0 && (
+        <Stack spacing={1}>
+          <Stack direction="row" useFlexGap sx={{ justifyContent: 'space-between', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            <Typography color="text.secondary" role="status">
+              {rows.length.toLocaleString()} {rows.length === 1 ? 'run' : 'runs'}
+              {selectedRuns.length > 0 && ` · ${selectedRuns.length.toLocaleString()} selected`}
+            </Typography>
+            <Button
+              variant="outlined"
+              color="error"
+              disabled={selectedRuns.length === 0 || remove.isPending}
+              onClick={() => {
+                setDeleteError(undefined)
+                setDeleteIds(selectedRuns.map(({ id }) => id))
+              }}
+            >
+              Delete selected
+            </Button>
+          </Stack>
+          <TableContainer component={Paper} variant="outlined">
+            <Table size="small" aria-label="Global runs">
+              <TableHead>
+                <TableRow>
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      checked={allSelected}
+                      indeterminate={!allSelected && selectedRuns.length > 0}
+                      disabled={remove.isPending}
+                      slotProps={{ input: {
+                        'aria-label': 'Select all global runs',
+                        'aria-checked': !allSelected && selectedRuns.length > 0 ? 'mixed' : allSelected,
+                      } }}
+                      onChange={(_, checked) => setSelectedIds(checked ? rows.map(({ id }) => id) : [])}
+                    />
                   </TableCell>
-                  <TableCell align="right">{run.repository_count}</TableCell>
+                  {heading('Started', 'created_at')}
+                  {heading('Repositories at launch', 'repository_count')}
+                  {severities.map((severity) => heading(severityLabels[severity], severity))}
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
+              </TableHead>
+              <TableBody>
+                {rows.map((run) => (
+                  <TableRow key={run.id} selected={selection.has(run.id)}>
+                    <TableCell padding="checkbox">
+                      <Checkbox
+                        checked={selection.has(run.id)}
+                        disabled={remove.isPending}
+                        slotProps={{ input: { 'aria-label': `Select run started ${dateFormat.format(new Date(run.created_at))}` } }}
+                        onChange={(_, checked) => setSelectedIds((ids) =>
+                          checked ? [...ids, run.id] : ids.filter((id) => id !== run.id),
+                        )}
+                      />
+                    </TableCell>
+                    <TableCell component="th" scope="row">
+                      <RoutedLink to="/global-runs/$runId" params={{ runId: run.id }}>
+                        <RunDate value={run.created_at} />
+                      </RoutedLink>
+                    </TableCell>
+                    <TableCell align="right">{run.repository_count.toLocaleString()}</TableCell>
+                    {severities.map((severity) => (
+                      <TableCell key={severity} align="right">
+                        {run.counts?.[severity].toLocaleString() ?? <span aria-label="Count unavailable">—</span>}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Stack>
+      )}
+      {deleteIds.length > 0 && (
+        <Dialog
+          open
+          fullWidth
+          maxWidth="sm"
+          onClose={remove.isPending ? undefined : () => setDeleteIds([])}
+          aria-labelledby="delete-selected-runs-title"
+          aria-describedby="delete-selected-runs-description"
+        >
+          <DialogTitle id="delete-selected-runs-title">
+            Delete {deleteIds.length.toLocaleString()} {deleteIds.length === 1 ? 'global run' : 'global runs'}?
+          </DialogTitle>
+          <DialogContent>
+            <DialogContentText id="delete-selected-runs-description">
+              This permanently deletes the selected runs and their reports from repository histories.
+            </DialogContentText>
+          </DialogContent>
+          <DialogActions>
+            <Button autoFocus disabled={remove.isPending} onClick={() => setDeleteIds([])}>Cancel</Button>
+            <Button variant="contained" color="error" loading={remove.isPending} onClick={() => remove.mutate(deleteIds)}>
+              Delete selected
+            </Button>
+          </DialogActions>
+        </Dialog>
       )}
     </Stack>
   )
