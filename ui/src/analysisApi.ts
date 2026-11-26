@@ -80,3 +80,11 @@ export const analysisApi = {
 export function isActive(result: AnalysisSummary) {
   return result.status === 'queued' || result.status === 'running'
 }
+
+export function resultCount(result: AnalysisSummary, severity: Severity) {
+  const count = result.counts[severity]
+  if (isActive(result) || (count === 0 && ['failed', 'not_evaluated'].includes(result.status))) {
+    return undefined
+  }
+  return count
+}

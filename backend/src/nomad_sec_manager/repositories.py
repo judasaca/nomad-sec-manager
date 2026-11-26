@@ -9,6 +9,7 @@ from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.errors import DuplicateKeyError
 from starlette.concurrency import run_in_threadpool
 
+from .analysis_results import AnalysisSummary, published_result_groups
 from .github import RepositoryMetadata, fetch_repository, normalize_repository_url
 
 router = APIRouter(prefix="/api/repositories", tags=["repositories"])
@@ -41,6 +42,10 @@ class Repository(RepositoryMetadata):
         return cls(id=str(document["_id"]), **document)
 
 
+class RepositoryWithAnalysis(Repository):
+    latest_analysis: AnalysisSummary | None
+
+
 def repository_collection(request: Request) -> AsyncCollection:
     return request.app.state.repositories
 
@@ -62,13 +67,35 @@ async def find_repository(collection: AsyncCollection, id: ObjectId) -> dict:
 
 
 @router.get("")
-async def list_repositories(collection: Collection) -> list[Repository]:
-    return [
-        Repository.from_document(document)
-        async for document in collection.find(visible_repository).sort(
-            [("created_at", -1), ("_id", -1)]
+async def list_repositories(collection: Collection) -> list[RepositoryWithAnalysis]:
+    cursor = await collection.aggregate(
+        [
+            {"$match": visible_repository},
+            {"$sort": {"created_at": -1, "_id": -1}},
+            {
+                "$lookup": {
+                    "from": "analysis_results",
+                    "localField": "_id",
+                    "foreignField": "repository_id",
+                    "pipeline": [
+                        {"$sort": {"created_at": -1, "_id": -1}},
+                        {"$project": {"steps": 0}},
+                        *published_result_groups(),
+                        {"$limit": 1},
+                    ],
+                    "as": "_latest_analysis",
+                }
+            },
+        ]
+    )
+    repositories = []
+    async for document in cursor:
+        latest = next(iter(document.pop("_latest_analysis")), None)
+        document["latest_analysis"] = (
+            AnalysisSummary.from_document(latest) if latest else None
         )
-    ]
+        repositories.append(RepositoryWithAnalysis.from_document(document))
+    return repositories
 
 
 @router.post("", status_code=201)

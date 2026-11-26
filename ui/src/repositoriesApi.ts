@@ -1,4 +1,5 @@
 import { request, requestJson } from './api'
+import type { AnalysisSummary } from './analysisApi'
 
 export type Repository = {
   id: string
@@ -18,6 +19,11 @@ export type Repository = {
   metadata_updated_at: string
 }
 
+export type RepositoryWithAnalysis = Repository & {
+  latest_analysis: AnalysisSummary | null
+}
+
+export const repositoriesKey = ['repositories']
 const repositoriesUrl = '/api/repositories'
 
 function saveRepository(method: 'POST' | 'PATCH', path: string, url?: string) {
@@ -30,7 +36,7 @@ function saveRepository(method: 'POST' | 'PATCH', path: string, url?: string) {
 
 export const repositoriesApi = {
   list: (signal: AbortSignal) =>
-    requestJson<Repository[]>(repositoriesUrl, { signal }),
+    requestJson<RepositoryWithAnalysis[]>(repositoriesUrl, { signal }),
   get: (id: string, signal: AbortSignal) =>
     requestJson<Repository>(`${repositoriesUrl}/${id}`, { signal }),
   create: (url: string) => saveRepository('POST', repositoriesUrl, url),

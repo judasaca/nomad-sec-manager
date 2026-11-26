@@ -2,7 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Self
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -14,47 +14,11 @@ from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import ConnectionFailure, DocumentTooLarge, PyMongoError
 from starlette.concurrency import run_in_threadpool
 
+from .analysis_results import AnalysisSummary, SeverityCounts, published_result_groups
 from .repositories import find_repository, repository_id, visible_repository
 
 router = APIRouter(prefix="/api", tags=["static analysis"])
 logger = logging.getLogger(__name__)
-
-ResultStatus = Literal[
-    "queued", "running", "clean", "findings", "not_evaluated", "failed"
-]
-
-
-class SeverityCounts(BaseModel):
-    high: int = 0
-    medium: int = 0
-    low: int = 0
-    informational: int = 0
-
-
-class AnalysisSummary(BaseModel):
-    id: str
-    repository_id: str
-    repository_name: str
-    global_run_id: str | None
-    status: ResultStatus
-    counts: SeverityCounts = Field(default_factory=SeverityCounts)
-    branch: str | None = None
-    commit: str | None = None
-    error: str | None = None
-    created_at: datetime
-    finished_at: datetime | None = None
-
-    @classmethod
-    def from_document(cls, document: dict) -> Self:
-        group_id = document["global_run_id"]
-        return cls.model_validate(
-            {
-                **document,
-                "id": str(document["_id"]),
-                "repository_id": str(document["repository_id"]),
-                "global_run_id": str(group_id) if group_id is not None else None,
-            }
-        )
 
 
 class AnalysisStep(BaseModel):
@@ -194,24 +158,9 @@ class AnalysisStore:
 
     @classmethod
     def published_results(cls) -> list[dict]:
-        # The group document publishes all of its results together on standalone MongoDB.
         return [
             *cls.results_for_visible_repositories(),
-            {
-                "$lookup": {
-                    "from": "global_runs",
-                    "localField": "global_run_id",
-                    "foreignField": "_id",
-                    "pipeline": [{"$match": {"deleting": {"$ne": True}}}],
-                    "as": "_group",
-                }
-            },
-            {
-                "$match": {
-                    "$or": [{"global_run_id": None}, {"_group.0": {"$exists": True}}]
-                }
-            },
-            {"$unset": "_group"},
+            *published_result_groups(),
         ]
 
     async def process_queue(self) -> None:

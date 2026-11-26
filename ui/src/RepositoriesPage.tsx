@@ -10,19 +10,29 @@ import {
   DialogContentText,
   DialogTitle,
   Link,
+  ListItemText,
+  Menu,
+  MenuItem,
   Paper,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
 } from '@mui/material'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink } from '@tanstack/react-router'
-import { useState, type FormEvent, type ReactNode } from 'react'
-import { analysisHistoryKey, globalRunsKey } from './analysisApi'
-import { repositoriesApi, type Repository } from './repositoriesApi'
+import { useId, useState, type FormEvent } from 'react'
+import { analysisHistoryKey, globalRunsKey, isActive, resultCount, severities } from './analysisApi'
+import { ResultStatus } from './AnalysisResultStatus'
+import { repositoriesApi, repositoriesKey, type Repository, type RepositoryWithAnalysis } from './repositoriesApi'
+import { severityFill, severityLabels } from './severity'
 
-const repositoriesKey = ['repositories']
-const RoutedButton = createLink(Button)
+const RoutedLink = createLink(Link)
 const dateFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -36,109 +46,146 @@ function RepositoryDate({ value }: { value: string }) {
   return <time dateTime={value}>{dateFormat.format(new Date(value))}</time>
 }
 
-function Metadata({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <Box sx={{ minWidth: 0 }}>
-      <Typography component="dt" variant="body2" color="text.secondary">
-        {label}
-      </Typography>
-      <Typography component="dd" sx={{ m: 0, overflowWrap: 'anywhere' }}>
-        {children}
-      </Typography>
-    </Box>
-  )
-}
-
-function RepositoryCard({
+function RepositoryRow({
   repository,
   refreshing,
   refreshDisabled,
   onRefresh,
   onOpenDialog,
 }: {
-  repository: Repository
+  repository: RepositoryWithAnalysis
   refreshing: boolean
   refreshDisabled: boolean
   onRefresh: () => void
   onOpenDialog: (dialog: RepositoryDialog) => void
 }) {
-  const commitSha = repository.last_commit_sha
-  return (
-    <Paper component="article" variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
-      <Stack spacing={2}>
-        <Stack
-          direction={{ xs: 'column', md: 'row' }}
-          spacing={1.5}
-          sx={{ alignItems: { md: 'flex-start' }, justifyContent: 'space-between' }}
-        >
-          <Box sx={{ minWidth: 0 }}>
-            <Stack direction="row" useFlexGap sx={{ gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-              <Typography component="h2" variant="h3" sx={{ overflowWrap: 'anywhere' }}>
-                <Link href={repository.url}>{repository.full_name}</Link>
-              </Typography>
-              {repository.archived && <Chip label="Archived" size="small" />}
-            </Stack>
-            {repository.description && (
-              <Typography color="text.secondary" sx={{ mt: 0.5, overflowWrap: 'anywhere' }}>
-                {repository.description}
-              </Typography>
-            )}
-          </Box>
-          <Stack direction="row" useFlexGap sx={{ gap: 0.5, flexWrap: 'wrap', flexShrink: 0 }}>
-            <RoutedButton
-              size="small"
-              to="/repositories/$repositoryId/analysis"
-              params={{ repositoryId: repository.id }}
-            >
-              Static analysis
-            </RoutedButton>
-            <Button size="small" onClick={onRefresh} disabled={refreshDisabled}>
-              {refreshing ? 'Refreshing…' : 'Refresh'}
-            </Button>
-            <Button size="small" onClick={() => onOpenDialog({ type: 'edit', repository })}>
-              Edit
-            </Button>
-            <Button size="small" color="error" onClick={() => onOpenDialog({ type: 'remove', repository })}>
-              Delete
-            </Button>
-          </Stack>
-        </Stack>
+  const [actionsAnchor, setActionsAnchor] = useState<HTMLElement | null>(null)
+  const actionsId = useId()
+  const { latest_analysis: analysis, last_commit_sha: commitSha } = repository
 
-        <Box
-          component="dl"
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' },
-            gap: 2,
-            m: 0,
-            pt: 2,
-            borderTop: 1,
-            borderColor: 'divider',
-          }}
+  return (
+    <TableRow hover>
+      <TableCell component="th" scope="row" sx={{ minWidth: 200, maxWidth: 300 }}>
+        <Stack direction="row" useFlexGap sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 0.75 }}>
+          <Link href={repository.url} sx={{ fontWeight: 700, overflowWrap: 'anywhere' }}>
+            {repository.full_name}
+          </Link>
+          {repository.archived && <Chip label="Archived" size="small" />}
+        </Stack>
+        {repository.description && (
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            title={repository.description}
+            sx={{ mt: 0.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {repository.description}
+          </Typography>
+        )}
+        <Typography variant="body2" color="text.secondary">
+          {repository.stars.toLocaleString()} {repository.stars === 1 ? 'star' : 'stars'}
+        </Typography>
+      </TableCell>
+      <TableCell sx={{ minWidth: 112, maxWidth: 160, overflowWrap: 'anywhere' }}>
+        {repository.default_branch}
+        <Typography variant="body2" color="text.secondary">
+          {repository.commit_count === null
+            ? 'Commit count unavailable'
+            : `${repository.commit_count.toLocaleString()} ${repository.commit_count === 1 ? 'commit' : 'commits'}`}
+        </Typography>
+      </TableCell>
+      <TableCell>{repository.language ?? '—'}</TableCell>
+      <TableCell sx={{ whiteSpace: 'nowrap' }}>
+        {commitSha ? (
+          <Link href={`${repository.url}/commit/${commitSha}`} title={repository.last_commit_subject ?? commitSha}>
+            <code>{commitSha.slice(0, 12)}</code>
+          </Link>
+        ) : 'No commits yet'}
+        {repository.last_commit_date && (
+          <Typography variant="body2" color="text.secondary">
+            <RepositoryDate value={repository.last_commit_date} />
+          </Typography>
+        )}
+      </TableCell>
+      <TableCell sx={{ whiteSpace: 'nowrap' }}>
+        <Stack spacing={0.25} sx={{ alignItems: 'flex-start' }}>
+          {analysis ? (
+            <>
+              <ResultStatus result={analysis} />
+              <Typography variant="body2" color="text.secondary">
+                <RepositoryDate value={analysis.finished_at ?? analysis.created_at} />
+              </Typography>
+            </>
+          ) : <Typography variant="body2" color="text.secondary">No analysis yet</Typography>}
+          <RoutedLink
+            to="/repositories/$repositoryId/analysis"
+            params={{ repositoryId: repository.id }}
+            aria-label={`Static analysis for ${repository.full_name}`}
+          >
+            Static analysis
+          </RoutedLink>
+        </Stack>
+      </TableCell>
+      {severities.map((severity) => {
+        const count = analysis ? resultCount(analysis, severity) : undefined
+        return (
+          <TableCell key={severity} align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+            {count === undefined ? <span aria-label="Count unavailable">—</span> : count > 0 ? (
+              <Box
+                component="span"
+                sx={[severityFill(severity), {
+                  display: 'inline-block',
+                  minWidth: 28,
+                  px: 0.75,
+                  borderRadius: 1,
+                  textAlign: 'center',
+                  fontWeight: 700,
+                }]}
+              >
+                {count.toLocaleString()}
+              </Box>
+            ) : count}
+          </TableCell>
+        )
+      })}
+      <TableCell align="right">
+        <Button
+          id={`${actionsId}-button`}
+          size="small"
+          aria-label={`Manage ${repository.full_name}`}
+          aria-haspopup="menu"
+          aria-expanded={Boolean(actionsAnchor)}
+          aria-controls={actionsAnchor ? actionsId : undefined}
+          onClick={(event) => setActionsAnchor(event.currentTarget)}
         >
-          <Metadata label="Default branch">{repository.default_branch}</Metadata>
-          <Metadata label="Commits on default branch">
-            {repository.commit_count?.toLocaleString() ?? 'Unavailable'}
-          </Metadata>
-          <Metadata label="Language">{repository.language ?? 'Unspecified'}</Metadata>
-          <Metadata label="Stars">{repository.stars.toLocaleString()}</Metadata>
-          <Metadata label="Latest commit">
-            {commitSha ? (
-              <>
-                <Link href={`${repository.url}/commit/${commitSha}`} title={commitSha}>
-                  <code>{commitSha.slice(0, 12)}</code>
-                </Link>
-                {repository.last_commit_subject && <> · {repository.last_commit_subject}</>}
-              </>
-            ) : 'No commits yet'}
-          </Metadata>
-          {repository.last_commit_date && (
-            <Metadata label="Commit date"><RepositoryDate value={repository.last_commit_date} /></Metadata>
-          )}
-          <Metadata label="Metadata refreshed"><RepositoryDate value={repository.metadata_updated_at} /></Metadata>
-        </Box>
-      </Stack>
-    </Paper>
+          {refreshing ? 'Refreshing…' : 'Manage'}
+        </Button>
+        <Menu
+          anchorEl={actionsAnchor}
+          open={Boolean(actionsAnchor)}
+          onClose={() => setActionsAnchor(null)}
+          slotProps={{ list: { id: actionsId, 'aria-labelledby': `${actionsId}-button` } }}
+        >
+          <MenuItem disabled={refreshDisabled} onClick={() => {
+            setActionsAnchor(null)
+            onRefresh()
+          }}>
+            <ListItemText
+              primary="Refresh metadata"
+              secondary={<>Last refreshed <RepositoryDate value={repository.metadata_updated_at} /></>}
+            />
+          </MenuItem>
+          <MenuItem onClick={() => {
+            setActionsAnchor(null)
+            onOpenDialog({ type: 'edit', repository })
+          }}>Edit repository</MenuItem>
+          <MenuItem sx={{ color: 'error.main' }} onClick={() => {
+            setActionsAnchor(null)
+            onOpenDialog({ type: 'remove', repository })
+          }}>Delete repository</MenuItem>
+        </Menu>
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -233,15 +280,22 @@ function RepositoryEditor({ dialog, onClose }: { dialog: RepositoryDialog; onClo
 export function RepositoriesPage() {
   const queryClient = useQueryClient()
   const [dialog, setDialog] = useState<RepositoryDialog | null>(null)
+  const [search, setSearch] = useState('')
   const repositories = useQuery({
     queryKey: repositoriesKey,
     queryFn: ({ signal }) => repositoriesApi.list(signal),
+    refetchInterval: (query) => query.state.data?.some(
+      ({ latest_analysis }) => latest_analysis && isActive(latest_analysis),
+    ) ? 1500 : false,
     retry: false,
   })
   const refresh = useMutation({
     mutationFn: (repository: Repository) => repositoriesApi.update(repository.id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: repositoriesKey }),
   })
+  const saved = repositories.data ?? []
+  const searchTerm = search.trim().toLowerCase()
+  const rows = saved.filter(({ full_name }) => full_name.toLowerCase().includes(searchTerm))
 
   return (
     <Stack spacing={3}>
@@ -275,16 +329,61 @@ export function RepositoriesPage() {
           </Typography>
         </Paper>
       )}
-      {repositories.data?.map((repository) => (
-        <RepositoryCard
-          key={repository.id}
-          repository={repository}
-          refreshing={refresh.isPending && refresh.variables?.id === repository.id}
-          refreshDisabled={refresh.isPending}
-          onRefresh={() => refresh.mutate(repository)}
-          onOpenDialog={setDialog}
-        />
-      ))}
+      {saved.length > 0 && (
+        <Stack spacing={1.5}>
+          <Stack direction="row" useFlexGap sx={{ gap: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+            <TextField
+              label="Search by repository name"
+              type="search"
+              size="small"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              sx={{ width: { xs: '100%', sm: 300 } }}
+            />
+            <Typography variant="body2" color="text.secondary" role="status">
+              {searchTerm
+                ? `${rows.length.toLocaleString()} of ${saved.length.toLocaleString()} repositories`
+                : `${saved.length.toLocaleString()} ${saved.length === 1 ? 'repository' : 'repositories'}`}
+            </Typography>
+          </Stack>
+          <TableContainer component={Paper} variant="outlined" role="region" aria-label="Repository list" tabIndex={0}>
+            <Table size="small" aria-label="Repositories">
+              <TableHead>
+                <TableRow sx={{ bgcolor: 'background.highlight' }}>
+                  <TableCell>Repository</TableCell>
+                  <TableCell>Default branch</TableCell>
+                  <TableCell>Language</TableCell>
+                  <TableCell>Latest commit</TableCell>
+                  <TableCell>Latest analysis</TableCell>
+                  {severities.map((severity) => (
+                    <TableCell key={severity} align="right">{severityLabels[severity]}</TableCell>
+                  ))}
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {rows.map((repository) => (
+                  <RepositoryRow
+                    key={repository.id}
+                    repository={repository}
+                    refreshing={refresh.isPending && refresh.variables?.id === repository.id}
+                    refreshDisabled={refresh.isPending}
+                    onRefresh={() => refresh.mutate(repository)}
+                    onOpenDialog={setDialog}
+                  />
+                ))}
+                {rows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={6 + severities.length} sx={{ py: 3, color: 'text.secondary' }}>
+                      No repositories match your search.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Stack>
+      )}
       {dialog && <RepositoryEditor dialog={dialog} onClose={() => setDialog(null)} />}
     </Stack>
   )

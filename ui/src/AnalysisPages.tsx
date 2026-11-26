@@ -26,9 +26,10 @@ import type { Theme } from '@mui/material/styles'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink, useNavigate, useParams } from '@tanstack/react-router'
 import { useId, useState } from 'react'
-import { analysisApi, analysisHistoryKey, globalRunsKey, isActive, severities, type AnalysisResult, type AnalysisSummary, type GlobalRunSummary, type Severity } from './analysisApi'
+import { analysisApi, analysisHistoryKey, globalRunsKey, isActive, resultCount, severities, type AnalysisResult, type AnalysisSummary, type GlobalRunSummary, type Severity } from './analysisApi'
+import { ResultStatus, statusLabels } from './AnalysisResultStatus'
 import { FindingsTrendPlot } from './FindingsTrendPlot'
-import { repositoriesApi } from './repositoriesApi'
+import { repositoriesApi, repositoriesKey } from './repositoriesApi'
 import { severityFill, severityLabels } from './severity'
 
 const RoutedLink = createLink(Link)
@@ -104,30 +105,8 @@ function SeverityOverview({ counts }: { counts: AnalysisSummary['counts'] }) {
   )
 }
 
-const statusLabels: Record<AnalysisSummary['status'], string> = {
-  queued: 'Queued',
-  running: 'Running',
-  clean: 'Clean',
-  findings: 'Findings',
-  not_evaluated: 'Not evaluated',
-  failed: 'Failed',
-}
-
 function RunDate({ value }: { value: string }) {
   return <time dateTime={value}>{dateFormat.format(new Date(value))}</time>
-}
-
-function ResultStatus({ result }: { result: AnalysisSummary }) {
-  const color = {
-    clean: 'success',
-    findings: 'warning',
-    failed: 'error',
-    running: 'info',
-    queued: 'default',
-    not_evaluated: 'default',
-  } as const
-
-  return <Chip size="small" label={statusLabels[result.status]} color={color[result.status]} />
 }
 
 function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: () => void }) {
@@ -283,16 +262,14 @@ function ResultsTable({ results, global = false }: { results: AnalysisSummary[];
                 </TableCell>
                 <TableCell><ResultStatus result={result} /></TableCell>
                 {severities.map((severity) => {
-                  const count = result.counts[severity]
-                  const unavailable = isActive(result)
-                    || ((result.status === 'failed' || result.status === 'not_evaluated') && count === 0)
+                  const count = resultCount(result, severity)
                   return (
                     <TableCell
                       key={severity}
                       align="right"
-                      sx={!global && count > 0 ? [severityTone(severity), { fontWeight: 700 }] : undefined}
+                      sx={!global && count !== undefined && count > 0 ? [severityTone(severity), { fontWeight: 700 }] : undefined}
                     >
-                      {unavailable ? '—' : global && count > 0 ? (
+                      {count === undefined ? '—' : global && count > 0 ? (
                         <Box
                           component="span"
                           sx={[severityFill(severity), {
@@ -403,7 +380,10 @@ export function GlobalRunsPage() {
   const start = useMutation({
     mutationFn: analysisApi.startGlobal,
     onSuccess: async (run) => {
-      await queryClient.invalidateQueries({ queryKey: globalRunsKey })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: globalRunsKey }),
+        queryClient.invalidateQueries({ queryKey: repositoriesKey, exact: true }),
+      ])
       await navigate({ to: '/global-runs/$runId', params: { runId: run.id } })
     },
   })
@@ -450,6 +430,7 @@ export function GlobalRunsPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: globalRunsKey, exact: true }),
         queryClient.invalidateQueries({ queryKey: analysisHistoryKey }),
+        queryClient.invalidateQueries({ queryKey: repositoriesKey, exact: true }),
       ])
     },
   })
@@ -632,6 +613,7 @@ export function GlobalRunPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: globalRunsKey, exact: true }),
         queryClient.invalidateQueries({ queryKey: analysisHistoryKey }),
+        queryClient.invalidateQueries({ queryKey: repositoriesKey, exact: true }),
       ])
     },
   })
@@ -713,7 +695,7 @@ export function RepositoryAnalysisPage() {
   const queryClient = useQueryClient()
   const historyKey = [...analysisHistoryKey, repositoryId]
   const repository = useQuery({
-    queryKey: ['repositories', repositoryId],
+    queryKey: [...repositoriesKey, repositoryId],
     queryFn: ({ signal }) => repositoriesApi.get(repositoryId, signal),
     retry: false,
   })
@@ -725,7 +707,10 @@ export function RepositoryAnalysisPage() {
   })
   const start = useMutation({
     mutationFn: () => analysisApi.start(repositoryId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: historyKey }),
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: historyKey }),
+      queryClient.invalidateQueries({ queryKey: repositoriesKey, exact: true }),
+    ]),
   })
   const name = repository.data?.full_name ?? history.data?.[0]?.repository_name
 
