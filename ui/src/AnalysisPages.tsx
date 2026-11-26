@@ -10,9 +10,11 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  FormControlLabel,
   Link,
   Paper,
   Stack,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -26,7 +28,11 @@ import type { Theme } from '@mui/material/styles'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink, useNavigate, useParams } from '@tanstack/react-router'
 import { useId, useState } from 'react'
-import { analysisApi, analysisHistoryKey, globalRunsKey, isActive, resultCount, severities, type AnalysisResult, type AnalysisSummary, type GlobalRunSummary, type Severity } from './analysisApi'
+import {
+  analysisApi, analysisHistoryKey, globalRunsKey, isActive, isCiCdEvaluated, resultCount,
+  severities, totalPythonFindings, type AnalysisResult, type AnalysisSummary, type DependencyAudit,
+  type GlobalRunSummary, type PythonCounts, type Severity, type SeverityCounts,
+} from './analysisApi'
 import { ResultStatus, statusLabels } from './AnalysisResultStatus'
 import { FindingsTrendPlot } from './FindingsTrendPlot'
 import { repositoriesApi, repositoriesKey } from './repositoriesApi'
@@ -70,17 +76,17 @@ function SeverityTag({ severity, count }: { severity: Severity; count?: number }
   )
 }
 
-function totalFindings(counts: AnalysisSummary['counts']) {
+function totalFindings(counts: SeverityCounts) {
   return severities.reduce((total, severity) => total + counts[severity], 0)
 }
 
-function SeverityOverview({ counts }: { counts: AnalysisSummary['counts'] }) {
+function SeverityOverview({ counts }: { counts: SeverityCounts }) {
   const total = totalFindings(counts)
   return (
-    <Paper component="section" aria-label="Findings by severity" variant="outlined" sx={{ p: 2 }}>
+    <Paper component="section" aria-label="CI/CD findings by severity" variant="outlined" sx={{ p: 2 }}>
       <Stack spacing={1.5}>
         <Stack direction="row" useFlexGap sx={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
-          <Typography variant="h3" component="h2">Findings by severity</Typography>
+          <Typography variant="h3" component="h2">CI/CD findings by severity</Typography>
           <Typography color="text.secondary">
             {total.toLocaleString()} {total === 1 ? 'finding' : 'findings'} total
           </Typography>
@@ -109,11 +115,42 @@ function RunDate({ value }: { value: string }) {
   return <time dateTime={value}>{dateFormat.format(new Date(value))}</time>
 }
 
+function PythonAuditDetails({ audit }: { audit: DependencyAudit }) {
+  return (
+    <Stack spacing={1}>
+      <Typography variant="h3" component="h3">Python dependencies</Typography>
+      {audit.vulnerabilities.map(({ dependency, id, summary, link, fix_versions }) => (
+        <Paper key={`${dependency.name}@${dependency.version}:${id}`} variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
+          <Stack spacing={0.75}>
+            <Typography sx={{ fontWeight: 700 }}>{dependency.name} {dependency.version}</Typography>
+            <Typography>
+              {link.startsWith('https://') ? <Link href={link} target="_blank" rel="noreferrer">{id}</Link> : id}
+            </Typography>
+            {summary && <Typography>{summary}</Typography>}
+            {fix_versions.length > 0 && (
+              <Typography variant="body2">Fixed in {fix_versions.join(', ')}</Typography>
+            )}
+          </Stack>
+        </Paper>
+      ))}
+      {audit.adverse_statuses.map(({ name, status, reason }) => (
+        <Paper key={`${name}:${status}`} variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
+          <Typography sx={{ fontWeight: 700 }}>{name}</Typography>
+          <Typography>{status}</Typography>
+          {reason && <Typography variant="body2">{reason}</Typography>}
+        </Paper>
+      ))}
+    </Stack>
+  )
+}
+
 function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: () => void }) {
   const [showFindings, setShowFindings] = useState(false)
   const findingsId = useId()
   const incomplete = result.status === 'failed' || result.status === 'not_evaluated'
-  const hasFindings = totalFindings(result.counts) > 0
+  const pythonCounts = result.python_counts
+  const hasCiCdFindings = totalFindings(result.counts) > 0
+  const hasFindings = hasCiCdFindings || (pythonCounts ? totalPythonFindings(pythonCounts) : 0) > 0
   const needsDiagnostic = incomplete && !result.error
   const report = useQuery({
     queryKey: ['analysis-result', result.id],
@@ -136,7 +173,16 @@ function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: (
           {isActive(result) && (
             <Typography color="text.secondary">The report will appear when the scan finishes.</Typography>
           )}
-          {(result.status === 'clean' || hasFindings) && <SeverityOverview counts={result.counts} />}
+          {(isCiCdEvaluated(result) || hasCiCdFindings) && <SeverityOverview counts={result.counts} />}
+          {pythonCounts && (
+            <Paper component="section" variant="outlined" sx={{ p: 2 }}>
+              <Typography variant="h3" component="h2">Python dependencies</Typography>
+              <Typography color="text.secondary">
+                {pythonCounts.security_findings.toLocaleString()} security findings ·{' '}
+                {pythonCounts.adverse_project_statuses.toLocaleString()} adverse project statuses
+              </Typography>
+            </Paper>
+          )}
           {needsDiagnostic && report.data?.steps
             .filter((step) => step.status === 'error' || step.status === 'not_evaluated' || step.status === 'skipped')
             .map((step) => <Alert key={step.name} severity={step.status === 'error' ? 'error' : 'warning'}>{step.message}</Alert>)}
@@ -157,6 +203,11 @@ function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: (
           <Box id={findingsId} hidden={!showFindings}>
             {showFindings && (
               <Stack spacing={2}>
+                {report.data?.steps.filter(({ dependency_audit }) =>
+                  dependency_audit && (dependency_audit.vulnerabilities.length > 0 || dependency_audit.adverse_statuses.length > 0),
+                ).map(({ name, dependency_audit }) => (
+                  dependency_audit && <PythonAuditDetails key={name} audit={dependency_audit} />
+                ))}
                 {report.data?.steps.filter((step) => step.findings.length > 0).map((step) => (
                   <Stack key={step.name} spacing={1}>
                     <Typography variant="h3" component="h3">{step.name === 'ci-cd' ? 'CI/CD' : step.name}</Typography>
@@ -188,33 +239,122 @@ function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: (
   )
 }
 
-type SortColumn = 'repository_name' | 'status' | Severity
+type FindingGroup = 'python' | 'ci_cd'
+type FindingColumn = FindingGroup | keyof PythonCounts | Severity
+type FindingTableColumn = { key: FindingColumn; label: string; group?: FindingGroup }
 
-function ResultsTable({ results, global = false }: { results: AnalysisSummary[]; global?: boolean }) {
+const severityColumns = severities.map((key) => ({ key, label: severityLabels[key] }))
+const findingGroups: { key: FindingGroup; label: string; details: FindingTableColumn[] }[] = [
+  {
+    key: 'python',
+    label: 'Python',
+    details: [
+      { key: 'security_findings', label: 'Security findings' },
+      { key: 'adverse_project_statuses', label: 'Adverse project statuses' },
+    ],
+  },
+  { key: 'ci_cd', label: 'CI/CD', details: severityColumns },
+]
+const detailedColumns = findingGroups.flatMap(({ details }) => details)
+
+function globalFindingColumns(showDetails: boolean): FindingTableColumn[] {
+  return findingGroups.flatMap(({ key, label, details }) => [
+    { key, label, group: key },
+    ...(showDetails ? details.map((column) => ({ ...column, group: key })) : []),
+  ])
+}
+
+function findingColumnStyle(group: FindingGroup | undefined, column: string) {
+  if (!group) return undefined
+
+  const isTotal = column === group
+  return (theme: Theme) => {
+    const color = theme.vars.palette[group === 'python' ? 'primary' : 'secondary'].main
+    return {
+      backgroundColor: theme.alpha(color, isTotal ? 0.18 : 0.09),
+      fontVariantNumeric: 'tabular-nums',
+      ...(isTotal && { borderInlineStart: `1px solid ${theme.alpha(color, 0.3)}`, fontWeight: 700 }),
+      ...theme.applyStyles('dark', {
+        backgroundColor: theme.alpha(color, isTotal ? 0.24 : 0.14),
+      }),
+    }
+  }
+}
+
+function isSeverity(column: FindingColumn): column is Severity {
+  return Object.hasOwn(severityLabels, column)
+}
+
+function findingCount({ counts, python_counts }: GlobalRunSummary | AnalysisSummary, column: FindingColumn) {
+  if (column === 'python') return python_counts == null ? undefined : totalPythonFindings(python_counts)
+  if (column === 'ci_cd') return counts == null ? undefined : totalFindings(counts)
+  if (isSeverity(column)) return counts?.[column]
+  return python_counts?.[column]
+}
+
+function globalResultCount(result: AnalysisSummary, column: FindingColumn) {
+  if (isSeverity(column)) return resultCount(result, column)
+  const count = findingCount(result, column)
+  if (column === 'ci_cd' && (isActive(result) || (count === 0 && !isCiCdEvaluated(result)))) return undefined
+  return count
+}
+
+type SortDirection = 'asc' | 'desc'
+
+function compareCounts(a: number | undefined, b: number | undefined, direction: SortDirection) {
+  if (a === undefined) return b === undefined ? 0 : 1
+  if (b === undefined) return -1
+  return direction === 'asc' ? a - b : b - a
+}
+
+function DetailedColumnsSwitch({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <FormControlLabel
+      sx={{ alignSelf: 'flex-start', m: 0 }}
+      control={<Switch checked={checked} onChange={(_, next) => onChange(next)} />}
+      label="Show detailed columns"
+    />
+  )
+}
+
+type SortColumn = 'repository_name' | 'status' | FindingColumn
+const initialResultSort = { column: 'repository_name', direction: 'asc' } as const
+
+function ResultsTable({
+  results,
+  global = false,
+  showDetails = false,
+}: {
+  results: AnalysisSummary[]
+  global?: boolean
+  showDetails?: boolean
+}) {
   const [selectedResult, setSelectedResult] = useState<string | null>(null)
   const selection = results.find(({ id }) => id === selectedResult)
-  const [sort, setSort] = useState<{ column: SortColumn; direction: 'asc' | 'desc' }>({
-    column: 'repository_name',
-    direction: 'asc',
-  })
+  const [selectedSort, setSort] = useState<{ column: SortColumn; direction: SortDirection }>(initialResultSort)
+  const columns: FindingTableColumn[] = global ? globalFindingColumns(showDetails) : severityColumns
+  const sort = !showDetails && detailedColumns.some(({ key }) => key === selectedSort.column)
+    ? initialResultSort
+    : selectedSort
   const rows = global ? [...results].sort((a, b) => {
     const { column, direction } = sort
+    const order = direction === 'asc' ? 1 : -1
     const comparison = column === 'repository_name'
-      ? a.repository_name.localeCompare(b.repository_name)
+      ? a.repository_name.localeCompare(b.repository_name) * order
       : column === 'status'
-        ? statusLabels[a.status].localeCompare(statusLabels[b.status])
-        : a.counts[column] - b.counts[column]
-    return (direction === 'asc' ? comparison : -comparison)
-      || a.repository_name.localeCompare(b.repository_name)
+        ? statusLabels[a.status].localeCompare(statusLabels[b.status]) * order
+        : compareCounts(globalResultCount(a, column), globalResultCount(b, column), direction)
+    return comparison || a.repository_name.localeCompare(b.repository_name)
   }) : results
 
-  function heading(label: string, column: SortColumn, numeric = false) {
+  function heading(label: string, column: SortColumn, numeric = false, group?: FindingGroup) {
     const active = sort.column === column
     return (
       <TableCell
         key={column}
         align={numeric ? 'right' : 'left'}
         sortDirection={global && active ? sort.direction : false}
+        sx={findingColumnStyle(group, column)}
       >
         {global ? (
           <TableSortLabel
@@ -240,7 +380,7 @@ function ResultsTable({ results, global = false }: { results: AnalysisSummary[];
             <TableRow>
               {global ? heading('Repository', 'repository_name') : <TableCell>Started</TableCell>}
               {heading('Status', 'status')}
-              {severities.map((severity) => heading(severityLabels[severity], severity, true))}
+              {columns.map(({ key, label, group }) => heading(label, key, true, group))}
               {!global && <TableCell>Run</TableCell>}
               <TableCell align="right">Report</TableCell>
             </TableRow>
@@ -261,15 +401,17 @@ function ResultsTable({ results, global = false }: { results: AnalysisSummary[];
                   )}
                 </TableCell>
                 <TableCell><ResultStatus result={result} /></TableCell>
-                {severities.map((severity) => {
-                  const count = resultCount(result, severity)
+                {columns.map(({ key, group }) => {
+                  const severity = isSeverity(key) ? key : undefined
+                  const count = global ? globalResultCount(result, key) : severity && resultCount(result, severity)
+                  const emphasizedSeverity = !global && severity && count !== undefined && count > 0
                   return (
                     <TableCell
-                      key={severity}
+                      key={key}
                       align="right"
-                      sx={!global && count !== undefined && count > 0 ? [severityTone(severity), { fontWeight: 700 }] : undefined}
+                      sx={emphasizedSeverity ? [severityTone(severity), { fontWeight: 700 }] : findingColumnStyle(group, key)}
                     >
-                      {count === undefined ? '—' : global && count > 0 ? (
+                      {count === undefined ? <span aria-label="Count unavailable">—</span> : global && severity && count > 0 ? (
                         <Box
                           component="span"
                           sx={[severityFill(severity), {
@@ -285,7 +427,7 @@ function ResultsTable({ results, global = false }: { results: AnalysisSummary[];
                         >
                           {count.toLocaleString()}
                         </Box>
-                      ) : count}
+                      ) : count.toLocaleString()}
                     </TableCell>
                   )
                 })}
@@ -317,9 +459,9 @@ function FindingsTrend({ runs }: { runs: GlobalRunSummary[] }) {
   const selected = points.find((run) => run.id === selectedId) ?? points.at(-1)
 
   return (
-    <Paper component="section" aria-label="Findings over time" variant="outlined" sx={{ p: 2 }}>
+    <Paper component="section" aria-label="CI/CD findings over time" variant="outlined" sx={{ p: 2 }}>
       <Stack spacing={1.5}>
-        <Typography variant="h3" component="h2">Findings over time</Typography>
+        <Typography variant="h3" component="h2">CI/CD findings over time</Typography>
         {selected ? (
           <>
             <FindingsTrendPlot
@@ -347,28 +489,27 @@ function FindingsTrend({ runs }: { runs: GlobalRunSummary[] }) {
             )}
           </>
         ) : (
-          <Typography color="text.secondary">Finding counts will appear when a global run has finished with usable results.</Typography>
+          <Typography color="text.secondary">CI/CD counts will appear when a global run has finished with usable results.</Typography>
         )}
       </Stack>
     </Paper>
   )
 }
 
-type GlobalRunSortColumn = 'created_at' | 'repository_count' | Severity
+type GlobalRunSortColumn = 'created_at' | 'repository_count' | FindingColumn
+const initialGlobalRunSort = { column: 'created_at', direction: 'desc' } as const
 
 function runSortValue(run: GlobalRunSummary, column: GlobalRunSortColumn) {
   if (column === 'created_at') return Date.parse(run.created_at)
   if (column === 'repository_count') return run.repository_count
-  return run.counts?.[column]
+  return findingCount(run, column)
 }
 
 export function GlobalRunsPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const [sort, setSort] = useState<{ column: GlobalRunSortColumn; direction: 'asc' | 'desc' }>({
-    column: 'created_at',
-    direction: 'desc',
-  })
+  const [showDetails, setShowDetails] = useState(false)
+  const [selectedSort, setSort] = useState<{ column: GlobalRunSortColumn; direction: SortDirection }>(initialGlobalRunSort)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [deleteIds, setDeleteIds] = useState<string[]>([])
   const [deleteError, setDeleteError] = useState<string>()
@@ -434,26 +575,26 @@ export function GlobalRunsPage() {
       ])
     },
   })
-  const rows = [...(runs.data ?? [])].sort((a, b) => {
-    const valueA = runSortValue(a, sort.column)
-    const valueB = runSortValue(b, sort.column)
-    const newestFirst = Date.parse(b.created_at) - Date.parse(a.created_at)
-    if (valueA === undefined) return valueB === undefined ? newestFirst : 1
-    if (valueB === undefined) return -1
-    const comparison = sort.direction === 'asc' ? valueA - valueB : valueB - valueA
-    return comparison || newestFirst
-  })
+  const columns = globalFindingColumns(showDetails)
+  const sort = !showDetails && detailedColumns.some(({ key }) => key === selectedSort.column)
+    ? initialGlobalRunSort
+    : selectedSort
+  const rows = [...(runs.data ?? [])].sort((a, b) =>
+    compareCounts(runSortValue(a, sort.column), runSortValue(b, sort.column), sort.direction)
+    || Date.parse(b.created_at) - Date.parse(a.created_at),
+  )
   const selection = new Set(selectedIds)
   const selectedRuns = rows.filter((run) => selection.has(run.id))
   const allSelected = rows.length > 0 && selectedRuns.length === rows.length
 
-  function heading(label: string, column: GlobalRunSortColumn) {
+  function heading(label: string, column: GlobalRunSortColumn, group?: FindingGroup) {
     const active = sort.column === column
     return (
       <TableCell
         key={column}
         align={column === 'created_at' ? 'left' : 'right'}
         sortDirection={active ? sort.direction : false}
+        sx={findingColumnStyle(group, column)}
       >
         <TableSortLabel
           active={active}
@@ -490,17 +631,20 @@ export function GlobalRunsPage() {
               {rows.length.toLocaleString()} {rows.length === 1 ? 'run' : 'runs'}
               {selectedRuns.length > 0 && ` · ${selectedRuns.length.toLocaleString()} selected`}
             </Typography>
-            <Button
-              variant="outlined"
-              color="error"
-              disabled={selectedRuns.length === 0 || remove.isPending}
-              onClick={() => {
-                setDeleteError(undefined)
-                setDeleteIds(selectedRuns.map(({ id }) => id))
-              }}
-            >
-              Delete selected
-            </Button>
+            <Stack direction="row" useFlexGap sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+              <DetailedColumnsSwitch checked={showDetails} onChange={setShowDetails} />
+              <Button
+                variant="outlined"
+                color="error"
+                disabled={selectedRuns.length === 0 || remove.isPending}
+                onClick={() => {
+                  setDeleteError(undefined)
+                  setDeleteIds(selectedRuns.map(({ id }) => id))
+                }}
+              >
+                Delete selected
+              </Button>
+            </Stack>
           </Stack>
           <TableContainer component={Paper} variant="outlined">
             <Table size="small" aria-label="Global runs">
@@ -520,7 +664,7 @@ export function GlobalRunsPage() {
                   </TableCell>
                   {heading('Started', 'created_at')}
                   {heading('Repositories at launch', 'repository_count')}
-                  {severities.map((severity) => heading(severityLabels[severity], severity))}
+                  {columns.map(({ key, label, group }) => heading(label, key, group))}
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -542,9 +686,9 @@ export function GlobalRunsPage() {
                       </RoutedLink>
                     </TableCell>
                     <TableCell align="right">{run.repository_count.toLocaleString()}</TableCell>
-                    {severities.map((severity) => (
-                      <TableCell key={severity} align="right">
-                        {run.counts?.[severity].toLocaleString() ?? <span aria-label="Count unavailable">—</span>}
+                    {columns.map(({ key, group }) => (
+                      <TableCell key={key} align="right" sx={findingColumnStyle(group, key)}>
+                        {findingCount(run, key)?.toLocaleString() ?? <span aria-label="Count unavailable">—</span>}
                       </TableCell>
                     ))}
                   </TableRow>
@@ -588,6 +732,7 @@ export function GlobalRunPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [showDetails, setShowDetails] = useState(false)
   const runKey = [...globalRunsKey, runId]
   const run = useQuery({
     queryKey: runKey,
@@ -618,9 +763,14 @@ export function GlobalRunPage() {
     },
   })
   const counts = { high: 0, medium: 0, low: 0, informational: 0 }
+  let repositoriesWithFindings = 0
   for (const result of data?.results ?? []) {
     for (const severity of severities) counts[severity] += result.counts[severity]
+    if (totalFindings(result.counts) > 0 || (result.python_counts && totalPythonFindings(result.python_counts) > 0)) {
+      repositoriesWithFindings += 1
+    }
   }
+  const hasCiCdResults = totalFindings(counts) > 0 || data?.results.some(isCiCdEvaluated)
 
   return (
     <Stack spacing={3}>
@@ -646,14 +796,15 @@ export function GlobalRunPage() {
           <Stack direction="row" useFlexGap sx={{ gap: 1, flexWrap: 'wrap' }} role="status">
             {remaining > 0 && <Chip label={`${data.results.filter((result) => !isActive(result)).length} of ${remaining} finished`} />}
             <Chip color="success" label={`${data.clean_count} clean`} />
-            <Chip color="warning" label={`${data.results.filter((result) => severities.some((severity) => result.counts[severity] > 0)).length} with findings`} />
+            <Chip color="warning" label={`${repositoriesWithFindings} with findings`} />
             <Chip label={`${data.results.filter((result) => result.status === 'failed' || result.status === 'not_evaluated').length} incomplete`} />
             {removed > 0 && <Chip label={`${removed} ${removed === 1 ? 'report' : 'reports'} removed`} />}
           </Stack>
           {remaining > 0 ? (
             <>
-              <SeverityOverview counts={counts} />
-              <ResultsTable key={data.id} results={data.results} global />
+              <DetailedColumnsSwitch checked={showDetails} onChange={setShowDetails} />
+              {showDetails && hasCiCdResults && <SeverityOverview counts={counts} />}
+              <ResultsTable key={data.id} results={data.results} global showDetails={showDetails} />
             </>
           ) : (
             <Typography color="text.secondary">No reports remain for this run.</Typography>

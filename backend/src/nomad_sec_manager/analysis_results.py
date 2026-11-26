@@ -15,6 +15,11 @@ class SeverityCounts(BaseModel):
     informational: int = 0
 
 
+class PythonCounts(BaseModel):
+    security_findings: int = 0
+    adverse_project_statuses: int = 0
+
+
 class AnalysisSummary(BaseModel):
     id: str
     repository_id: str
@@ -22,6 +27,8 @@ class AnalysisSummary(BaseModel):
     global_run_id: str | None
     status: ResultStatus
     counts: SeverityCounts = Field(default_factory=SeverityCounts)
+    ci_cd_evaluated: bool | None = None
+    python_counts: PythonCounts | None = None
     branch: str | None = None
     commit: str | None = None
     error: str | None = None

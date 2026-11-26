@@ -209,7 +209,7 @@ dev = [{ name = "ruff", specifier = ">=0.14,<1" }]
 [[package]]
 name = "nomad-sec-ops"
 version = "0.1.0"
-source = { git = "https://github.com/judasaca/nomad-sec-ops.git?branch=develop#7ce126a0582bc05947061487177c32daf921b216" }
+source = { git = "https://github.com/judasaca/nomad-sec-ops.git?branch=develop#ce343fe1d4fe177a472bc7915b4397eb07a2f1e8" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },

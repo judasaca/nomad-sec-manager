@@ -141,7 +141,7 @@ export function FindingsTrendPlot({
       ref={canvasRef}
       role="slider"
       tabIndex={0}
-      aria-label="Global run for findings by severity"
+      aria-label="Global run for CI/CD findings by severity"
       aria-valuemin={1}
       aria-valuemax={points.length}
       aria-valuenow={selectedIndex + 1}

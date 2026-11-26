@@ -6,6 +6,11 @@ type ResultStatus = 'queued' | 'running' | 'clean' | 'findings' | 'not_evaluated
 
 export type SeverityCounts = Record<Severity, number>
 
+export type PythonCounts = {
+  security_findings: number
+  adverse_project_statuses: number
+}
+
 export type AnalysisSummary = {
   id: string
   repository_id: string
@@ -13,6 +18,8 @@ export type AnalysisSummary = {
   global_run_id: string | null
   status: ResultStatus
   counts: SeverityCounts
+  ci_cd_evaluated: boolean | null
+  python_counts: PythonCounts | null
   branch: string | null
   commit: string | null
   error: string | null
@@ -31,12 +38,25 @@ type Finding = {
   remediation: string
 }
 
+export type DependencyAudit = {
+  audited_packages: number
+  vulnerabilities: {
+    dependency: { name: string; version: string }
+    id: string
+    summary: string | null
+    link: string
+    fix_versions: string[]
+  }[]
+  adverse_statuses: { name: string; status: string; reason: string | null }[]
+}
+
 export type AnalysisResult = AnalysisSummary & {
   steps: {
     name: string
     status: 'passed' | 'findings' | 'skipped' | 'not_evaluated' | 'error'
     message: string
     findings: Finding[]
+    dependency_audit: DependencyAudit | null
   }[]
 }
 
@@ -50,6 +70,7 @@ export type GlobalRunSummary = GlobalRun & {
   active_count: number
   evaluated_count: number
   counts: SeverityCounts | null
+  python_counts: PythonCounts | null
 }
 
 type GlobalRunDetails = GlobalRun & {
@@ -83,8 +104,16 @@ export function isActive(result: AnalysisSummary) {
 
 export function resultCount(result: AnalysisSummary, severity: Severity) {
   const count = result.counts[severity]
-  if (isActive(result) || (count === 0 && ['failed', 'not_evaluated'].includes(result.status))) {
+  if (isActive(result) || (count === 0 && !isCiCdEvaluated(result))) {
     return undefined
   }
   return count
+}
+
+export function isCiCdEvaluated(result: AnalysisSummary) {
+  return result.ci_cd_evaluated ?? (result.status === 'clean' || result.status === 'findings')
+}
+
+export function totalPythonFindings(counts: PythonCounts) {
+  return counts.security_findings + counts.adverse_project_statuses
 }

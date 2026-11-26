@@ -7,14 +7,19 @@ from typing import Annotated, Self
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from nomad_sec_ops import AnalysisError, AnalysisReport, static_analysis
-from nomad_sec_ops.models import AnalysisStatus, Finding
+from nomad_sec_ops.models import AnalysisStatus, DependencyAudit, Finding
 from pydantic import BaseModel, Field
 from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import ConnectionFailure, DocumentTooLarge, PyMongoError
 from starlette.concurrency import run_in_threadpool
 
-from .analysis_results import AnalysisSummary, SeverityCounts, published_result_groups
+from .analysis_results import (
+    AnalysisSummary,
+    PythonCounts,
+    SeverityCounts,
+    published_result_groups,
+)
 from .repositories import find_repository, repository_id, visible_repository
 
 router = APIRouter(prefix="/api", tags=["static analysis"])
@@ -26,6 +31,7 @@ class AnalysisStep(BaseModel):
     status: AnalysisStatus
     message: str
     findings: list[Finding]
+    dependency_audit: DependencyAudit | None = None
 
 
 class AnalysisResult(AnalysisSummary):
@@ -46,6 +52,7 @@ class GlobalRunSummary(GlobalRun):
     active_count: int = 0
     evaluated_count: int = 0
     counts: SeverityCounts | None = None
+    python_counts: PythonCounts | None = None
 
 
 class GlobalRunDetails(GlobalRun):
@@ -60,20 +67,37 @@ def report_fields(report: AnalysisReport) -> dict:
             status=step.result.status,
             message=step.result.message,
             findings=step.result.findings,
+            dependency_audit=step.result.dependency_audit,
         )
         for step in report.steps
     ]
     counts = SeverityCounts().model_dump()
+    ci_cd_evaluated = False
+    python_counts = None
     for step in steps:
-        for finding in step.findings:
-            counts[finding.severity] += 1
+        if step.name == "ci-cd":
+            ci_cd_evaluated = step.status in (
+                AnalysisStatus.PASSED,
+                AnalysisStatus.FINDINGS,
+            )
+            for finding in step.findings:
+                counts[finding.severity] += 1
+        elif step.name == "python-dependencies" and step.dependency_audit is not None:
+            python_counts = PythonCounts(
+                security_findings=len(step.dependency_audit.vulnerabilities),
+                adverse_project_statuses=len(step.dependency_audit.adverse_statuses),
+            ).model_dump()
 
     statuses = {step.status for step in steps}
     if AnalysisStatus.ERROR in statuses:
         status = "failed"
     elif AnalysisStatus.NOT_EVALUATED in statuses:
         status = "not_evaluated"
-    elif any(counts.values()):
+    elif (
+        AnalysisStatus.FINDINGS in statuses
+        or any(counts.values())
+        or (python_counts and any(python_counts.values()))
+    ):
         status = "findings"
     elif AnalysisStatus.PASSED in statuses:
         status = "clean"
@@ -83,6 +107,8 @@ def report_fields(report: AnalysisReport) -> dict:
     return {
         "status": status,
         "counts": counts,
+        "ci_cd_evaluated": ci_cd_evaluated,
+        "python_counts": python_counts,
         "branch": report.repository.branch if report.repository else None,
         "commit": report.repository.commit if report.repository else None,
         "steps": [step.model_dump(mode="json") for step in steps],
@@ -337,6 +363,8 @@ async def start_global_run(store: Store) -> GlobalRun:
 @router.get("/global-runs")
 async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
     severities = SeverityCounts.model_fields
+    python_categories = PythonCounts.model_fields
+    evaluated = {"$in": ["$status", ["clean", "findings"]]}
     cursor = await store.global_runs.aggregate(
         [
             {"$match": {"deleting": {"$ne": True}}},
@@ -347,7 +375,15 @@ async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
                     "localField": "_id",
                     "foreignField": "global_run_id",
                     "pipeline": [
-                        {"$project": {"repository_id": 1, "status": 1, "counts": 1}},
+                        {
+                            "$project": {
+                                "repository_id": 1,
+                                "status": 1,
+                                "counts": 1,
+                                "ci_cd_evaluated": 1,
+                                "python_counts": 1,
+                            }
+                        },
                         *store.results_for_visible_repositories(),
                         {
                             "$group": {
@@ -362,17 +398,26 @@ async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
                                     }
                                 },
                                 "evaluated_count": {
-                                    "$sum": {
-                                        "$cond": [
-                                            {"$in": ["$status", ["clean", "findings"]]},
-                                            1,
-                                            0,
+                                    "$sum": {"$cond": [evaluated, 1, 0]}
+                                },
+                                "ci_cd_evaluated": {
+                                    "$max": {"$ifNull": ["$ci_cd_evaluated", evaluated]}
+                                },
+                                "python_audited": {
+                                    "$max": {
+                                        "$ne": [
+                                            {"$ifNull": ["$python_counts", None]},
+                                            None,
                                         ]
                                     }
                                 },
                                 **{
                                     severity: {"$sum": f"$counts.{severity}"}
                                     for severity in severities
+                                },
+                                **{
+                                    category: {"$sum": f"$python_counts.{category}"}
+                                    for category in python_categories
                                 },
                             }
                         },
@@ -395,7 +440,14 @@ async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
                     "active_count": active_count,
                     "evaluated_count": evaluated_count,
                     "counts": counts
-                    if not active_count and (evaluated_count or any(counts.values()))
+                    if not active_count
+                    and (totals.get("ci_cd_evaluated") or any(counts.values()))
+                    else None,
+                    "python_counts": {
+                        category: totals.get(category, 0)
+                        for category in python_categories
+                    }
+                    if not active_count and totals.get("python_audited")
                     else None,
                 }
             )
