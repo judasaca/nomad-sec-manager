@@ -33,7 +33,7 @@ import {
   totalPythonFindings, type AnalysisResult, type AnalysisSummary, type DependencyAudit,
   type Finding, type GlobalRunSummary, type PythonCounts, type SeverityBucket, type SeverityCounts,
 } from './analysisApi'
-import { ResultStatus, statusLabels } from './AnalysisResultStatus'
+import { ResultStatus, statusLabels, stepLabels } from './AnalysisResultStatus'
 import { FindingsTrendPlot } from './FindingsTrendPlot'
 import { repositoriesApi, repositoriesKey } from './repositoriesApi'
 import { severityFill, severityLabels } from './severity'
@@ -172,18 +172,10 @@ function FindingDetails({ finding }: { finding: Finding }) {
   )
 }
 
-const stepLabels: Record<string, string> = {
-  'ci-cd': 'CI/CD',
-  'python-dependencies': 'Python dependencies',
-  'npm-dependencies': 'npm dependencies',
-  'repository-settings': 'Repository settings',
-  docker: 'Docker',
-}
-
 function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: () => void }) {
   const [showDetails, setShowDetails] = useState(false)
   const detailsId = useId()
-  const incomplete = result.status === 'failed' || result.status === 'not_evaluated'
+  const incomplete = result.status === 'failed' || result.status === 'not_evaluated' || result.status === 'incomplete'
   const pythonCounts = result.python_counts
   const needsDiagnostic = incomplete && !result.error
   const report = useQuery({
@@ -821,7 +813,10 @@ export function GlobalRunPage() {
             {remaining > 0 && <Chip label={`${data.results.filter((result) => !isActive(result)).length} of ${remaining} finished`} />}
             <Chip color="success" label={`${data.clean_count} clean`} />
             <Chip color="warning" label={`${repositoriesWithFindings} with findings`} />
-            <Chip label={`${data.results.filter((result) => result.status === 'failed' || result.status === 'not_evaluated').length} incomplete`} />
+            <Chip label={`${data.results.filter((result) =>
+              result.status === 'failed' || result.status === 'not_evaluated'
+              || result.status === 'incomplete' || result.diagnostics.length > 0,
+            ).length} incomplete`} />
             {removed > 0 && <Chip label={`${removed} ${removed === 1 ? 'report' : 'reports'} removed`} />}
           </Stack>
           {remaining > 0 ? (

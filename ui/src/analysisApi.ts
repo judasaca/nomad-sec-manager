@@ -4,7 +4,7 @@ export const severities = ['high', 'medium', 'low', 'informational'] as const
 export type Severity = typeof severities[number]
 export const severityBuckets = [...severities, 'unavailable'] as const
 export type SeverityBucket = typeof severityBuckets[number]
-type ResultStatus = 'queued' | 'running' | 'clean' | 'findings' | 'not_evaluated' | 'failed'
+type ResultStatus = 'queued' | 'running' | 'clean' | 'findings' | 'not_evaluated' | 'failed' | 'incomplete'
 
 export type SeverityCounts = Record<SeverityBucket, number>
 
@@ -19,6 +19,7 @@ export type AnalysisSummary = {
   repository_name: string
   global_run_id: string | null
   status: ResultStatus
+  diagnostics: { name: string; status: 'error' | 'not_evaluated' | 'skipped'; message: string }[]
   counts: SeverityCounts | null
   ci_cd_count: number | null
   python_counts: PythonCounts | null

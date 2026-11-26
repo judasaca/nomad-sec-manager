@@ -38,7 +38,7 @@ class ReportFieldsTests(TestCase):
         for step_status, expected in (
             (AnalysisStatus.PASSED, "clean"),
             (AnalysisStatus.SKIPPED, "not_evaluated"),
-            (AnalysisStatus.NOT_EVALUATED, "not_evaluated"),
+            (AnalysisStatus.NOT_EVALUATED, "incomplete"),
             (AnalysisStatus.ERROR, "failed"),
         ):
             with self.subTest(status=step_status):
@@ -101,18 +101,56 @@ class ReportFieldsTests(TestCase):
                 StepResult(
                     name="python-dependencies",
                     result=CheckResult(
-                        status=AnalysisStatus.NOT_EVALUATED, message="Skipped"
+                        status=AnalysisStatus.NOT_EVALUATED, message="uv unavailable"
+                    ),
+                ),
+                StepResult(
+                    name="repository-settings",
+                    result=CheckResult(
+                        status=AnalysisStatus.ERROR, message="Could not load settings"
                     ),
                 ),
             ]
         )
         fields = report_fields(report)
-        self.assertEqual(fields["status"], "not_evaluated")
-        result = stored_result(fields)
+        self.assertEqual(fields["status"], "findings")
+        result = stored_result({**fields, "status": "failed"})
+        self.assertEqual(result.status, "findings")
+        self.assertEqual(
+            [(item.status, item.message) for item in result.diagnostics],
+            [
+                ("not_evaluated", "uv unavailable"),
+                ("error", "Could not load settings"),
+            ],
+        )
         self.assertEqual(result.counts, SeverityCounts(high=1, low=1))
         self.assertEqual(result.steps[0].findings[0], finding)
         self.assertEqual(result.ci_cd_count, 2)
         self.assertIsNone(result.python_counts)
+
+    def test_mixed_statuses_keep_successful_checks_and_distinguish_skips(self):
+        for statuses, expected, diagnostics in (
+            (("passed", "error", "skipped"), "clean", ["error"]),
+            (("error", "error"), "failed", ["error", "error"]),
+            (("error", "skipped"), "incomplete", ["error"]),
+            (("skipped", "skipped"), "not_evaluated", ["skipped", "skipped"]),
+            (("skipped", "not_evaluated"), "incomplete", ["not_evaluated"]),
+        ):
+            with self.subTest(statuses=statuses):
+                report = AnalysisReport(
+                    steps=[
+                        StepResult(
+                            name=str(index),
+                            result=CheckResult(status=status, message=status),
+                        )
+                        for index, status in enumerate(statuses)
+                    ]
+                )
+                result = stored_result(report_fields(report))
+                self.assertEqual(result.status, expected)
+                self.assertEqual(
+                    [item.status for item in result.diagnostics], diagnostics
+                )
 
     def test_python_findings_and_metadata_survive_serialization(self):
         vulnerability = DependencyVulnerabilityFinding.model_validate(

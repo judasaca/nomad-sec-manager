@@ -9,7 +9,11 @@ from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.errors import DuplicateKeyError
 from starlette.concurrency import run_in_threadpool
 
-from .analysis_results import AnalysisSummary, published_result_groups
+from .analysis_results import (
+    STEP_SUMMARY_PROJECTION,
+    AnalysisSummary,
+    published_result_groups,
+)
 from .github import RepositoryMetadata, fetch_repository, normalize_repository_url
 
 router = APIRouter(prefix="/api/repositories", tags=["repositories"])
@@ -79,7 +83,7 @@ async def list_repositories(collection: Collection) -> list[RepositoryWithAnalys
                     "foreignField": "repository_id",
                     "pipeline": [
                         {"$sort": {"created_at": -1, "_id": -1}},
-                        {"$project": {"steps": 0}},
+                        {"$project": STEP_SUMMARY_PROJECTION},
                         *published_result_groups(),
                         {"$limit": 1},
                     ],

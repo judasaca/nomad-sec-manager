@@ -15,9 +15,11 @@ from pymongo.errors import ConnectionFailure, DocumentTooLarge, PyMongoError
 from starlette.concurrency import run_in_threadpool
 
 from .analysis_results import (
+    STEP_SUMMARY_PROJECTION,
     AnalysisSummary,
     PythonCounts,
     SeverityCounts,
+    completed_status,
     published_result_groups,
 )
 from .repositories import find_repository, repository_id, visible_repository
@@ -95,19 +97,8 @@ def report_fields(report: AnalysisReport) -> dict:
     statuses = {step.status for step in steps}
     evaluated = not statuses.isdisjoint(evaluated_statuses)
     has_findings = any(counts.values())
-    if AnalysisStatus.ERROR in statuses:
-        status = "failed"
-    elif AnalysisStatus.NOT_EVALUATED in statuses:
-        status = "not_evaluated"
-    elif AnalysisStatus.FINDINGS in statuses or has_findings:
-        status = "findings"
-    elif AnalysisStatus.PASSED in statuses:
-        status = "clean"
-    else:
-        status = "not_evaluated"
-
     return {
-        "status": status,
+        "status": completed_status(statuses, has_findings),
         "counts": counts if evaluated or has_findings else None,
         "ci_cd_count": ci_cd_count if ci_cd_evaluated or ci_cd_count else None,
         "python_counts": python_counts.model_dump()
@@ -324,7 +315,7 @@ async def repository_analysis_history(id: str, store: Store) -> list[AnalysisSum
         [
             {"$match": {"repository_id": object_id}},
             {"$sort": {"created_at": -1, "_id": -1}},
-            {"$project": {"steps": 0}},
+            {"$project": STEP_SUMMARY_PROJECTION},
             *store.published_results(),
         ]
     )
@@ -370,7 +361,22 @@ async def start_global_run(store: Store) -> GlobalRun:
 async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
     severities = SeverityCounts.model_fields
     python_categories = PythonCounts.model_fields
-    evaluated = {"$in": ["$status", ["clean", "findings"]]}
+    evaluated = {
+        "$and": [
+            {"$in": ["$status", ["clean", "findings"]]},
+            {
+                "$eq": [
+                    {
+                        "$setIntersection": [
+                            {"$ifNull": ["$steps.status", []]},
+                            ["error", "not_evaluated"],
+                        ]
+                    },
+                    [],
+                ]
+            },
+        ]
+    }
     count_fields = ("counts", "ci_cd_count", "python_counts")
     cursor = await store.global_runs.aggregate(
         [
@@ -386,6 +392,7 @@ async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
                             "$project": {
                                 "repository_id": 1,
                                 "status": 1,
+                                "steps.status": 1,
                                 **dict.fromkeys(count_fields, 1),
                             }
                         },
@@ -472,7 +479,7 @@ async def get_global_run(id: str, store: Store) -> GlobalRunDetails:
         [
             {"$match": {"global_run_id": group_id}},
             {"$sort": {"repository_name": 1}},
-            {"$project": {"steps": 0}},
+            {"$project": STEP_SUMMARY_PROJECTION},
             *store.published_results(),
         ]
     )
