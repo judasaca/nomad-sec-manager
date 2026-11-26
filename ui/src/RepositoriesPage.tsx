@@ -27,7 +27,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink } from '@tanstack/react-router'
 import { useId, useState, type FormEvent } from 'react'
-import { analysisHistoryKey, globalRunsKey, isActive, resultCount, severities } from './analysisApi'
+import { analysisHistoryKey, globalRunsKey, isActive, severityBuckets, totalFindings } from './analysisApi'
 import { ResultStatus } from './AnalysisResultStatus'
 import { repositoriesApi, repositoriesKey, type Repository, type RepositoryWithAnalysis } from './repositoriesApi'
 import { severityFill, severityLabels } from './severity'
@@ -126,8 +126,11 @@ function RepositoryRow({
           </RoutedLink>
         </Stack>
       </TableCell>
-      {severities.map((severity) => {
-        const count = analysis ? resultCount(analysis, severity) : undefined
+      <TableCell align="right" sx={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+        {analysis?.counts ? totalFindings(analysis.counts).toLocaleString() : <span aria-label="Count unavailable">—</span>}
+      </TableCell>
+      {severityBuckets.map((severity) => {
+        const count = analysis?.counts?.[severity]
         return (
           <TableCell key={severity} align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
             {count === undefined ? <span aria-label="Count unavailable">—</span> : count > 0 ? (
@@ -355,7 +358,8 @@ export function RepositoriesPage() {
                   <TableCell>Language</TableCell>
                   <TableCell>Latest commit</TableCell>
                   <TableCell>Latest analysis</TableCell>
-                  {severities.map((severity) => (
+                  <TableCell align="right">Total findings</TableCell>
+                  {severityBuckets.map((severity) => (
                     <TableCell key={severity} align="right">{severityLabels[severity]}</TableCell>
                   ))}
                   <TableCell align="right">Actions</TableCell>
@@ -374,7 +378,7 @@ export function RepositoriesPage() {
                 ))}
                 {rows.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={6 + severities.length} sx={{ py: 3, color: 'text.secondary' }}>
+                    <TableCell colSpan={7 + severityBuckets.length} sx={{ py: 3, color: 'text.secondary' }}>
                       No repositories match your search.
                     </TableCell>
                   </TableRow>

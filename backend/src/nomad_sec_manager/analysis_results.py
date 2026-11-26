@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 ResultStatus = Literal[
     "queued", "running", "clean", "findings", "not_evaluated", "failed"
@@ -13,11 +13,12 @@ class SeverityCounts(BaseModel):
     medium: int = 0
     low: int = 0
     informational: int = 0
+    unavailable: int = 0
 
 
 class PythonCounts(BaseModel):
-    security_findings: int = 0
-    adverse_project_statuses: int = 0
+    vulnerabilities: int = 0
+    project_status_findings: int = 0
 
 
 class AnalysisSummary(BaseModel):
@@ -26,8 +27,8 @@ class AnalysisSummary(BaseModel):
     repository_name: str
     global_run_id: str | None
     status: ResultStatus
-    counts: SeverityCounts = Field(default_factory=SeverityCounts)
-    ci_cd_evaluated: bool | None = None
+    counts: SeverityCounts | None = None
+    ci_cd_count: int | None = None
     python_counts: PythonCounts | None = None
     branch: str | None = None
     commit: str | None = None

@@ -29,9 +29,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createLink, useNavigate, useParams } from '@tanstack/react-router'
 import { useId, useState } from 'react'
 import {
-  analysisApi, analysisHistoryKey, globalRunsKey, isActive, isCiCdEvaluated, resultCount,
-  severities, totalPythonFindings, type AnalysisResult, type AnalysisSummary, type DependencyAudit,
-  type GlobalRunSummary, type PythonCounts, type Severity, type SeverityCounts,
+  analysisApi, analysisHistoryKey, globalRunsKey, isActive, severities, severityBuckets, totalFindings,
+  totalPythonFindings, type AnalysisResult, type AnalysisSummary, type DependencyAudit,
+  type Finding, type GlobalRunSummary, type PythonCounts, type SeverityBucket, type SeverityCounts,
 } from './analysisApi'
 import { ResultStatus, statusLabels } from './AnalysisResultStatus'
 import { FindingsTrendPlot } from './FindingsTrendPlot'
@@ -41,21 +41,22 @@ import { severityFill, severityLabels } from './severity'
 const RoutedLink = createLink(Link)
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-const severityColors: Record<Severity, string> = {
+const severityColors: Record<SeverityBucket, string> = {
   high: 'error.main',
   medium: 'warning.main',
   low: '#826100',
   informational: 'info.main',
+  unavailable: 'text.secondary',
 }
 
-function severityTone(severity: Severity) {
+function severityTone(severity: SeverityBucket) {
   return (theme: Theme) => ({
     color: severityColors[severity],
     ...(severity === 'low' && theme.applyStyles('dark', { color: '#FFE082' })),
   })
 }
 
-function SeverityTag({ severity, count }: { severity: Severity; count?: number }) {
+function SeverityTag({ severity, count }: { severity: SeverityBucket; count?: number }) {
   const label = severityLabels[severity]
   return (
     <Chip
@@ -76,24 +77,20 @@ function SeverityTag({ severity, count }: { severity: Severity; count?: number }
   )
 }
 
-function totalFindings(counts: SeverityCounts) {
-  return severities.reduce((total, severity) => total + counts[severity], 0)
-}
-
 function SeverityOverview({ counts }: { counts: SeverityCounts }) {
   const total = totalFindings(counts)
   return (
-    <Paper component="section" aria-label="CI/CD findings by severity" variant="outlined" sx={{ p: 2 }}>
+    <Paper component="section" aria-label="Findings by severity" variant="outlined" sx={{ p: 2 }}>
       <Stack spacing={1.5}>
         <Stack direction="row" useFlexGap sx={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
-          <Typography variant="h3" component="h2">CI/CD findings by severity</Typography>
+          <Typography variant="h3" component="h2">Findings by severity</Typography>
           <Typography color="text.secondary">
             {total.toLocaleString()} {total === 1 ? 'finding' : 'findings'} total
           </Typography>
         </Stack>
         {total > 0 && (
           <Box aria-hidden sx={{ display: 'flex', gap: '2px', height: 14, borderRadius: 1, overflow: 'hidden' }}>
-            {severities.filter((severity) => counts[severity] > 0).map((severity) => (
+            {severityBuckets.filter((severity) => counts[severity] > 0).map((severity) => (
               <Box
                 key={severity}
                 sx={[severityFill(severity), { flex: counts[severity] }]}
@@ -102,7 +99,7 @@ function SeverityOverview({ counts }: { counts: SeverityCounts }) {
           </Box>
         )}
         <Stack direction="row" useFlexGap sx={{ gap: 1, flexWrap: 'wrap' }}>
-          {severities.map((severity) => (
+          {severityBuckets.map((severity) => (
             <SeverityTag key={severity} severity={severity} count={counts[severity]} />
           ))}
         </Stack>
@@ -115,47 +112,84 @@ function RunDate({ value }: { value: string }) {
   return <time dateTime={value}>{dateFormat.format(new Date(value))}</time>
 }
 
-function PythonAuditDetails({ audit }: { audit: DependencyAudit }) {
+function AuditDetails({ audit }: { audit: DependencyAudit }) {
   return (
-    <Stack spacing={1}>
-      <Typography variant="h3" component="h3">Python dependencies</Typography>
-      {audit.vulnerabilities.map(({ dependency, id, summary, link, fix_versions }) => (
-        <Paper key={`${dependency.name}@${dependency.version}:${id}`} variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
-          <Stack spacing={0.75}>
-            <Typography sx={{ fontWeight: 700 }}>{dependency.name} {dependency.version}</Typography>
-            <Typography>
-              {link.startsWith('https://') ? <Link href={link} target="_blank" rel="noreferrer">{id}</Link> : id}
-            </Typography>
-            {summary && <Typography>{summary}</Typography>}
-            {fix_versions.length > 0 && (
-              <Typography variant="body2">Fixed in {fix_versions.join(', ')}</Typography>
-            )}
-          </Stack>
-        </Paper>
-      ))}
-      {audit.adverse_statuses.map(({ name, status, reason }) => (
-        <Paper key={`${name}:${status}`} variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
-          <Typography sx={{ fontWeight: 700 }}>{name}</Typography>
-          <Typography>{status}</Typography>
-          {reason && <Typography variant="body2">{reason}</Typography>}
-        </Paper>
-      ))}
+    <Stack spacing={0.5}>
+      <Typography color="text.secondary">{audit.audited_packages.toLocaleString()} packages audited</Typography>
+      {audit.adverse_statuses.length > 0 && (
+        <>
+          <Typography sx={{ fontWeight: 700 }}>Other project statuses</Typography>
+          <Box component="ul" sx={{ m: 0, pl: 3, overflowWrap: 'anywhere' }}>
+            {audit.adverse_statuses.map(({ name, status, reason }, index) => (
+              <Box component="li" key={index}>
+                {name} · {status}{reason && ` · ${reason}`}
+              </Box>
+            ))}
+          </Box>
+        </>
+      )}
     </Stack>
   )
 }
 
+function FindingDetails({ finding }: { finding: Finding }) {
+  const { kind, metadata, message, severity, advisory_id: advisoryId } = finding
+  return (
+    <Paper variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
+      <Stack spacing={0.75} sx={{ alignItems: 'flex-start' }}>
+        <SeverityTag severity={severity ?? 'unavailable'} />
+        {kind === 'ci-cd' && (
+          <>
+            <Typography sx={{ fontWeight: 700 }}>
+              {metadata.upstream.documentation_url.startsWith('https://') ? (
+                <Link href={metadata.upstream.documentation_url} target="_blank" rel="noreferrer">{metadata.rule_id}</Link>
+              ) : metadata.rule_id}
+            </Typography>
+            <Typography component="code" variant="body2">{metadata.file}:{metadata.line}:{metadata.column}</Typography>
+          </>
+        )}
+        {kind === 'dependency-vulnerability' && (
+          <>
+            <Typography sx={{ fontWeight: 700 }}>{metadata.dependency.name} {metadata.dependency.version}</Typography>
+            {metadata.link.startsWith('https://') ? (
+              <Link href={metadata.link} target="_blank" rel="noreferrer">{advisoryId || 'View advisory'}</Link>
+            ) : advisoryId && <Typography>{advisoryId}</Typography>}
+          </>
+        )}
+        <Typography sx={kind === 'dependency-project-status' ? { fontWeight: 700 } : undefined}>{message}</Typography>
+        {kind === 'ci-cd' && (
+          <>
+            {metadata.evidence && <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{metadata.evidence}</Typography>}
+            {metadata.remediation && <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{metadata.remediation}</Typography>}
+          </>
+        )}
+        {kind === 'dependency-vulnerability' && metadata.fix_versions.length > 0 && (
+          <Typography variant="body2">Fixed in {metadata.fix_versions.join(', ')}</Typography>
+        )}
+        {kind === 'dependency-project-status' && metadata.reason && <Typography variant="body2">{metadata.reason}</Typography>}
+      </Stack>
+    </Paper>
+  )
+}
+
+const stepLabels: Record<string, string> = {
+  'ci-cd': 'CI/CD',
+  'python-dependencies': 'Python dependencies',
+  'npm-dependencies': 'npm dependencies',
+  'repository-settings': 'Repository settings',
+  docker: 'Docker',
+}
+
 function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: () => void }) {
-  const [showFindings, setShowFindings] = useState(false)
-  const findingsId = useId()
+  const [showDetails, setShowDetails] = useState(false)
+  const detailsId = useId()
   const incomplete = result.status === 'failed' || result.status === 'not_evaluated'
   const pythonCounts = result.python_counts
-  const hasCiCdFindings = totalFindings(result.counts) > 0
-  const hasFindings = hasCiCdFindings || (pythonCounts ? totalPythonFindings(pythonCounts) : 0) > 0
   const needsDiagnostic = incomplete && !result.error
   const report = useQuery({
     queryKey: ['analysis-result', result.id],
     queryFn: ({ signal }) => analysisApi.result(result.id, signal),
-    enabled: showFindings || needsDiagnostic,
+    enabled: showDetails || needsDiagnostic,
   })
 
   return (
@@ -173,60 +207,44 @@ function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: (
           {isActive(result) && (
             <Typography color="text.secondary">The report will appear when the scan finishes.</Typography>
           )}
-          {(isCiCdEvaluated(result) || hasCiCdFindings) && <SeverityOverview counts={result.counts} />}
+          {result.counts && <SeverityOverview counts={result.counts} />}
           {pythonCounts && (
             <Paper component="section" variant="outlined" sx={{ p: 2 }}>
               <Typography variant="h3" component="h2">Python dependencies</Typography>
               <Typography color="text.secondary">
-                {pythonCounts.security_findings.toLocaleString()} security findings ·{' '}
-                {pythonCounts.adverse_project_statuses.toLocaleString()} adverse project statuses
+                {pythonCounts.vulnerabilities.toLocaleString()} vulnerabilities ·{' '}
+                {pythonCounts.project_status_findings.toLocaleString()} project status findings
               </Typography>
             </Paper>
           )}
-          {needsDiagnostic && report.data?.steps
+          {needsDiagnostic && !showDetails && report.data?.steps
             .filter((step) => step.status === 'error' || step.status === 'not_evaluated' || step.status === 'skipped')
             .map((step) => <Alert key={step.name} severity={step.status === 'error' ? 'error' : 'warning'}>{step.message}</Alert>)}
-          {hasFindings && (
+          {(result.counts || report.data?.steps.length) ? (
             <Button
               sx={{ alignSelf: 'flex-start' }}
-              aria-controls={findingsId}
-              aria-expanded={showFindings}
-              onClick={() => setShowFindings((shown) => !shown)}
+              aria-controls={detailsId}
+              aria-expanded={showDetails}
+              onClick={() => setShowDetails((shown) => !shown)}
             >
-              {showFindings ? 'Hide finding details' : 'Show finding details'}
+              {showDetails ? 'Hide scan details' : 'Show scan details'}
             </Button>
-          )}
-          {(showFindings || needsDiagnostic) && report.isPending && (
+          ) : null}
+          {(showDetails || needsDiagnostic) && report.isPending && (
             <CircularProgress size={24} aria-label="Loading report details" />
           )}
-          {(showFindings || needsDiagnostic) && report.error && <Alert severity="error">{report.error.message}</Alert>}
-          <Box id={findingsId} hidden={!showFindings}>
-            {showFindings && (
+          {(showDetails || needsDiagnostic) && report.error && <Alert severity="error">{report.error.message}</Alert>}
+          <Box id={detailsId} hidden={!showDetails}>
+            {showDetails && (
               <Stack spacing={2}>
-                {report.data?.steps.filter(({ dependency_audit }) =>
-                  dependency_audit && (dependency_audit.vulnerabilities.length > 0 || dependency_audit.adverse_statuses.length > 0),
-                ).map(({ name, dependency_audit }) => (
-                  dependency_audit && <PythonAuditDetails key={name} audit={dependency_audit} />
-                ))}
-                {report.data?.steps.filter((step) => step.findings.length > 0).map((step) => (
-                  <Stack key={step.name} spacing={1}>
-                    <Typography variant="h3" component="h3">{step.name === 'ci-cd' ? 'CI/CD' : step.name}</Typography>
-                    {step.findings.map((finding, index) => (
-                      <Paper key={index} variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
-                        <Stack spacing={0.75}>
-                          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-                            <SeverityTag severity={finding.severity} />
-                            <Typography sx={{ fontWeight: 700 }}>{finding.rule_id}</Typography>
-                          </Stack>
-                          <Typography component="code" variant="body2">
-                            {finding.file}:{finding.line}:{finding.column}
-                          </Typography>
-                          <Typography>{finding.message}</Typography>
-                          {finding.evidence && <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{finding.evidence}</Typography>}
-                          {finding.remediation && <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{finding.remediation}</Typography>}
-                        </Stack>
-                      </Paper>
-                    ))}
+                {report.data?.steps.map(({ name, status, message, dependency_audit: audit, findings }) => (
+                  <Stack key={name} spacing={1}>
+                    <Typography variant="h3" component="h3">{stepLabels[name] ?? name}</Typography>
+                    {status === 'error' || status === 'not_evaluated' ? (
+                      <Alert severity={status === 'error' ? 'error' : 'warning'}>{message}</Alert>
+                    ) : !audit && <Typography color="text.secondary">{message}</Typography>}
+                    {audit && <AuditDetails audit={audit} />}
+                    {findings.map((finding, index) => <FindingDetails key={index} finding={finding} />)}
                   </Stack>
                 ))}
               </Stack>
@@ -239,21 +257,24 @@ function ResultDialog({ result, onClose }: { result: AnalysisSummary; onClose: (
   )
 }
 
-type FindingGroup = 'python' | 'ci_cd'
-type FindingColumn = FindingGroup | keyof PythonCounts | Severity
+type FindingGroup = 'total' | 'python' | 'ci_cd'
+type FindingColumn = FindingGroup | keyof PythonCounts | SeverityBucket
 type FindingTableColumn = { key: FindingColumn; label: string; group?: FindingGroup }
 
-const severityColumns = severities.map((key) => ({ key, label: severityLabels[key] }))
+const severityColumns = severityBuckets.map((key) => ({ key, label: severityLabels[key] }))
+const totalColumn = { key: 'total', label: 'Total findings' } as const
+const historyColumns: FindingTableColumn[] = [totalColumn, ...severityColumns]
 const findingGroups: { key: FindingGroup; label: string; details: FindingTableColumn[] }[] = [
+  { ...totalColumn, details: [] },
   {
     key: 'python',
     label: 'Python',
     details: [
-      { key: 'security_findings', label: 'Security findings' },
-      { key: 'adverse_project_statuses', label: 'Adverse project statuses' },
+      { key: 'vulnerabilities', label: 'Vulnerabilities' },
+      { key: 'project_status_findings', label: 'Project status findings' },
     ],
   },
-  { key: 'ci_cd', label: 'CI/CD', details: severityColumns },
+  { key: 'ci_cd', label: 'CI/CD', details: severities.map((key) => ({ key, label: severityLabels[key] })) },
 ]
 const detailedColumns = findingGroups.flatMap(({ details }) => details)
 
@@ -268,6 +289,9 @@ function findingColumnStyle(group: FindingGroup | undefined, column: string) {
   if (!group) return undefined
 
   const isTotal = column === group
+  if (group === 'total') {
+    return { bgcolor: 'action.hover', fontVariantNumeric: 'tabular-nums', ...(isTotal && { fontWeight: 700 }) }
+  }
   return (theme: Theme) => {
     const color = theme.vars.palette[group === 'python' ? 'primary' : 'secondary'].main
     return {
@@ -281,22 +305,22 @@ function findingColumnStyle(group: FindingGroup | undefined, column: string) {
   }
 }
 
-function isSeverity(column: FindingColumn): column is Severity {
+function isSeverity(column: FindingColumn): column is SeverityBucket {
   return Object.hasOwn(severityLabels, column)
 }
 
-function findingCount({ counts, python_counts }: GlobalRunSummary | AnalysisSummary, column: FindingColumn) {
+function findingCount({ counts, ci_cd_count, python_counts }: GlobalRunSummary | AnalysisSummary, column: FindingColumn) {
+  if (column === 'total') return counts == null ? undefined : totalFindings(counts)
   if (column === 'python') return python_counts == null ? undefined : totalPythonFindings(python_counts)
-  if (column === 'ci_cd') return counts == null ? undefined : totalFindings(counts)
+  if (column === 'ci_cd') return ci_cd_count ?? undefined
   if (isSeverity(column)) return counts?.[column]
   return python_counts?.[column]
 }
 
-function globalResultCount(result: AnalysisSummary, column: FindingColumn) {
-  if (isSeverity(column)) return resultCount(result, column)
-  const count = findingCount(result, column)
-  if (column === 'ci_cd' && (isActive(result) || (count === 0 && !isCiCdEvaluated(result)))) return undefined
-  return count
+function globalFindingCount(summary: GlobalRunSummary | AnalysisSummary, column: FindingColumn) {
+  // CI/CD is the only scanner that currently assigns severity.
+  if (isSeverity(column) && summary.ci_cd_count == null) return undefined
+  return findingCount(summary, column)
 }
 
 type SortDirection = 'asc' | 'desc'
@@ -332,7 +356,7 @@ function ResultsTable({
   const [selectedResult, setSelectedResult] = useState<string | null>(null)
   const selection = results.find(({ id }) => id === selectedResult)
   const [selectedSort, setSort] = useState<{ column: SortColumn; direction: SortDirection }>(initialResultSort)
-  const columns: FindingTableColumn[] = global ? globalFindingColumns(showDetails) : severityColumns
+  const columns = global ? globalFindingColumns(showDetails) : historyColumns
   const sort = !showDetails && detailedColumns.some(({ key }) => key === selectedSort.column)
     ? initialResultSort
     : selectedSort
@@ -343,7 +367,7 @@ function ResultsTable({
       ? a.repository_name.localeCompare(b.repository_name) * order
       : column === 'status'
         ? statusLabels[a.status].localeCompare(statusLabels[b.status]) * order
-        : compareCounts(globalResultCount(a, column), globalResultCount(b, column), direction)
+        : compareCounts(globalFindingCount(a, column), globalFindingCount(b, column), direction)
     return comparison || a.repository_name.localeCompare(b.repository_name)
   }) : results
 
@@ -403,7 +427,7 @@ function ResultsTable({
                 <TableCell><ResultStatus result={result} /></TableCell>
                 {columns.map(({ key, group }) => {
                   const severity = isSeverity(key) ? key : undefined
-                  const count = global ? globalResultCount(result, key) : severity && resultCount(result, severity)
+                  const count = global ? globalFindingCount(result, key) : findingCount(result, key)
                   const emphasizedSeverity = !global && severity && count !== undefined && count > 0
                   return (
                     <TableCell
@@ -459,9 +483,9 @@ function FindingsTrend({ runs }: { runs: GlobalRunSummary[] }) {
   const selected = points.find((run) => run.id === selectedId) ?? points.at(-1)
 
   return (
-    <Paper component="section" aria-label="CI/CD findings over time" variant="outlined" sx={{ p: 2 }}>
+    <Paper component="section" aria-label="Findings over time" variant="outlined" sx={{ p: 2 }}>
       <Stack spacing={1.5}>
-        <Typography variant="h3" component="h2">CI/CD findings over time</Typography>
+        <Typography variant="h3" component="h2">Findings over time</Typography>
         {selected ? (
           <>
             <FindingsTrendPlot
@@ -473,7 +497,7 @@ function FindingsTrend({ runs }: { runs: GlobalRunSummary[] }) {
               <Typography variant="body2" color="text.secondary">
                 <RunDate value={selected.created_at} />
               </Typography>
-              {severities.map((severity) => (
+              {severityBuckets.map((severity) => (
                 <SeverityTag key={severity} severity={severity} count={selected.counts[severity]} />
               ))}
               {selected.evaluated_count < selected.repository_count && (
@@ -489,7 +513,7 @@ function FindingsTrend({ runs }: { runs: GlobalRunSummary[] }) {
             )}
           </>
         ) : (
-          <Typography color="text.secondary">CI/CD counts will appear when a global run has finished with usable results.</Typography>
+          <Typography color="text.secondary">Finding counts will appear when a global run has finished with usable results.</Typography>
         )}
       </Stack>
     </Paper>
@@ -502,7 +526,7 @@ const initialGlobalRunSort = { column: 'created_at', direction: 'desc' } as cons
 function runSortValue(run: GlobalRunSummary, column: GlobalRunSortColumn) {
   if (column === 'created_at') return Date.parse(run.created_at)
   if (column === 'repository_count') return run.repository_count
-  return findingCount(run, column)
+  return globalFindingCount(run, column)
 }
 
 export function GlobalRunsPage() {
@@ -688,7 +712,7 @@ export function GlobalRunsPage() {
                     <TableCell align="right">{run.repository_count.toLocaleString()}</TableCell>
                     {columns.map(({ key, group }) => (
                       <TableCell key={key} align="right" sx={findingColumnStyle(group, key)}>
-                        {findingCount(run, key)?.toLocaleString() ?? <span aria-label="Count unavailable">—</span>}
+                        {globalFindingCount(run, key)?.toLocaleString() ?? <span aria-label="Count unavailable">—</span>}
                       </TableCell>
                     ))}
                   </TableRow>
@@ -762,15 +786,15 @@ export function GlobalRunPage() {
       ])
     },
   })
-  const counts = { high: 0, medium: 0, low: 0, informational: 0 }
+  const counts: SeverityCounts = { high: 0, medium: 0, low: 0, informational: 0, unavailable: 0 }
+  let hasCounts = false
   let repositoriesWithFindings = 0
   for (const result of data?.results ?? []) {
-    for (const severity of severities) counts[severity] += result.counts[severity]
-    if (totalFindings(result.counts) > 0 || (result.python_counts && totalPythonFindings(result.python_counts) > 0)) {
-      repositoriesWithFindings += 1
-    }
+    if (!result.counts) continue
+    hasCounts = true
+    for (const severity of severityBuckets) counts[severity] += result.counts[severity]
+    if (totalFindings(result.counts) > 0) repositoriesWithFindings += 1
   }
-  const hasCiCdResults = totalFindings(counts) > 0 || data?.results.some(isCiCdEvaluated)
 
   return (
     <Stack spacing={3}>
@@ -803,7 +827,7 @@ export function GlobalRunPage() {
           {remaining > 0 ? (
             <>
               <DetailedColumnsSwitch checked={showDetails} onChange={setShowDetails} />
-              {showDetails && hasCiCdResults && <SeverityOverview counts={counts} />}
+              {showDetails && hasCounts && <SeverityOverview counts={counts} />}
               <ResultsTable key={data.id} results={data.results} global showDetails={showDetails} />
             </>
           ) : (

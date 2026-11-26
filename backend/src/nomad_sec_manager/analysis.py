@@ -52,6 +52,7 @@ class GlobalRunSummary(GlobalRun):
     active_count: int = 0
     evaluated_count: int = 0
     counts: SeverityCounts | None = None
+    ci_cd_count: int | None = None
     python_counts: PythonCounts | None = None
 
 
@@ -72,32 +73,33 @@ def report_fields(report: AnalysisReport) -> dict:
         for step in report.steps
     ]
     counts = SeverityCounts().model_dump()
+    ci_cd_count = 0
     ci_cd_evaluated = False
-    python_counts = None
+    python_audited = False
+    python_counts = PythonCounts()
+    evaluated_statuses = {AnalysisStatus.PASSED, AnalysisStatus.FINDINGS}
     for step in steps:
-        if step.name == "ci-cd":
-            ci_cd_evaluated = step.status in (
-                AnalysisStatus.PASSED,
-                AnalysisStatus.FINDINGS,
-            )
-            for finding in step.findings:
-                counts[finding.severity] += 1
-        elif step.name == "python-dependencies" and step.dependency_audit is not None:
-            python_counts = PythonCounts(
-                security_findings=len(step.dependency_audit.vulnerabilities),
-                adverse_project_statuses=len(step.dependency_audit.adverse_statuses),
-            ).model_dump()
+        ci_cd_evaluated |= step.name == "ci-cd" and step.status in evaluated_statuses
+        if step.name == "python-dependencies":
+            python_audited |= step.dependency_audit is not None
+        for finding in step.findings:
+            counts[finding.severity or "unavailable"] += 1
+            if finding.kind == "ci-cd":
+                ci_cd_count += 1
+            elif step.name == "python-dependencies":
+                if finding.kind == "dependency-vulnerability":
+                    python_counts.vulnerabilities += 1
+                elif finding.kind == "dependency-project-status":
+                    python_counts.project_status_findings += 1
 
     statuses = {step.status for step in steps}
+    evaluated = not statuses.isdisjoint(evaluated_statuses)
+    has_findings = any(counts.values())
     if AnalysisStatus.ERROR in statuses:
         status = "failed"
     elif AnalysisStatus.NOT_EVALUATED in statuses:
         status = "not_evaluated"
-    elif (
-        AnalysisStatus.FINDINGS in statuses
-        or any(counts.values())
-        or (python_counts and any(python_counts.values()))
-    ):
+    elif AnalysisStatus.FINDINGS in statuses or has_findings:
         status = "findings"
     elif AnalysisStatus.PASSED in statuses:
         status = "clean"
@@ -106,9 +108,13 @@ def report_fields(report: AnalysisReport) -> dict:
 
     return {
         "status": status,
-        "counts": counts,
-        "ci_cd_evaluated": ci_cd_evaluated,
-        "python_counts": python_counts,
+        "counts": counts if evaluated or has_findings else None,
+        "ci_cd_count": ci_cd_count if ci_cd_evaluated or ci_cd_count else None,
+        "python_counts": python_counts.model_dump()
+        if python_audited
+        or python_counts.vulnerabilities
+        or python_counts.project_status_findings
+        else None,
         "branch": report.repository.branch if report.repository else None,
         "commit": report.repository.commit if report.repository else None,
         "steps": [step.model_dump(mode="json") for step in steps],
@@ -365,6 +371,7 @@ async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
     severities = SeverityCounts.model_fields
     python_categories = PythonCounts.model_fields
     evaluated = {"$in": ["$status", ["clean", "findings"]]}
+    count_fields = ("counts", "ci_cd_count", "python_counts")
     cursor = await store.global_runs.aggregate(
         [
             {"$match": {"deleting": {"$ne": True}}},
@@ -379,9 +386,7 @@ async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
                             "$project": {
                                 "repository_id": 1,
                                 "status": 1,
-                                "counts": 1,
-                                "ci_cd_evaluated": 1,
-                                "python_counts": 1,
+                                **dict.fromkeys(count_fields, 1),
                             }
                         },
                         *store.results_for_visible_repositories(),
@@ -400,17 +405,18 @@ async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
                                 "evaluated_count": {
                                     "$sum": {"$cond": [evaluated, 1, 0]}
                                 },
-                                "ci_cd_evaluated": {
-                                    "$max": {"$ifNull": ["$ci_cd_evaluated", evaluated]}
-                                },
-                                "python_audited": {
-                                    "$max": {
-                                        "$ne": [
-                                            {"$ifNull": ["$python_counts", None]},
-                                            None,
-                                        ]
+                                **{
+                                    f"has_{field}": {
+                                        "$max": {
+                                            "$ne": [
+                                                {"$ifNull": [f"${field}", None]},
+                                                None,
+                                            ]
+                                        }
                                     }
+                                    for field in count_fields
                                 },
+                                "ci_cd_count": {"$sum": "$ci_cd_count"},
                                 **{
                                     severity: {"$sum": f"$counts.{severity}"}
                                     for severity in severities
@@ -430,24 +436,23 @@ async def list_global_runs(store: Store) -> list[GlobalRunSummary]:
     runs = []
     async for group in cursor:
         totals = next(iter(group.pop("report_totals")), {})
-        counts = {severity: totals.get(severity, 0) for severity in severities}
         active_count = totals.get("active_count", 0)
-        evaluated_count = totals.get("evaluated_count", 0)
         runs.append(
             GlobalRunSummary.from_document(
                 {
                     **group,
                     "active_count": active_count,
-                    "evaluated_count": evaluated_count,
-                    "counts": counts
-                    if not active_count
-                    and (totals.get("ci_cd_evaluated") or any(counts.values()))
+                    "evaluated_count": totals.get("evaluated_count", 0),
+                    "counts": {severity: totals[severity] for severity in severities}
+                    if not active_count and totals.get("has_counts")
+                    else None,
+                    "ci_cd_count": totals["ci_cd_count"]
+                    if not active_count and totals.get("has_ci_cd_count")
                     else None,
                     "python_counts": {
-                        category: totals.get(category, 0)
-                        for category in python_categories
+                        category: totals[category] for category in python_categories
                     }
-                    if not active_count and totals.get("python_audited")
+                    if not active_count and totals.get("has_python_counts")
                     else None,
                 }
             )

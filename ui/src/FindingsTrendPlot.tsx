@@ -1,13 +1,13 @@
 import { Box } from '@mui/material'
 import { useColorScheme, useTheme } from '@mui/material/styles'
 import { useEffect, useRef } from 'react'
-import { severities, type SeverityCounts } from './analysisApi'
+import { severityBuckets, type SeverityCounts } from './analysisApi'
 import { severityFills, severityLabels } from './severity'
 
 const numberFormat = new Intl.NumberFormat()
 const dateFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: '2-digit' })
 const runDateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-const linePatterns = [[], [7, 3], [3, 3], [1, 3]]
+const linePatterns = [[], [7, 3], [3, 3], [1, 3], [9, 3, 2, 3]]
 
 type Point = { created_at: string; counts: SeverityCounts }
 
@@ -32,7 +32,7 @@ export function FindingsTrendPlot({
     if (!canvas || !context) return
 
     const maximum = points.reduce(
-      (max, point) => Math.max(max, ...severities.map((severity) => point.counts[severity])),
+      (max, point) => Math.max(max, ...severityBuckets.map((severity) => point.counts[severity])),
       0,
     )
     const targetStep = Math.max(1, maximum / 4)
@@ -91,7 +91,7 @@ export function FindingsTrendPlot({
       context.stroke()
       context.globalAlpha = 1
 
-      severities.forEach((severity, series) => {
+      severityBuckets.forEach((severity, series) => {
         const color = severityFills[severity][scheme]
         context.strokeStyle = color
         context.fillStyle = color
@@ -131,7 +131,7 @@ export function FindingsTrendPlot({
   }
 
   const selected = points[selectedIndex]
-  const selectedCounts = severities.map((severity) =>
+  const selectedCounts = severityBuckets.map((severity) =>
     `${severityLabels[severity]} ${numberFormat.format(selected.counts[severity])}`,
   ).join(', ')
 
@@ -141,7 +141,7 @@ export function FindingsTrendPlot({
       ref={canvasRef}
       role="slider"
       tabIndex={0}
-      aria-label="Global run for CI/CD findings by severity"
+      aria-label="Global run for findings by severity"
       aria-valuemin={1}
       aria-valuemax={points.length}
       aria-valuenow={selectedIndex + 1}

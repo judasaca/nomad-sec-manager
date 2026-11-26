@@ -2,13 +2,15 @@ import { request, requestJson } from './api'
 
 export const severities = ['high', 'medium', 'low', 'informational'] as const
 export type Severity = typeof severities[number]
+export const severityBuckets = [...severities, 'unavailable'] as const
+export type SeverityBucket = typeof severityBuckets[number]
 type ResultStatus = 'queued' | 'running' | 'clean' | 'findings' | 'not_evaluated' | 'failed'
 
-export type SeverityCounts = Record<Severity, number>
+export type SeverityCounts = Record<SeverityBucket, number>
 
 export type PythonCounts = {
-  security_findings: number
-  adverse_project_statuses: number
+  vulnerabilities: number
+  project_status_findings: number
 }
 
 export type AnalysisSummary = {
@@ -17,8 +19,8 @@ export type AnalysisSummary = {
   repository_name: string
   global_run_id: string | null
   status: ResultStatus
-  counts: SeverityCounts
-  ci_cd_evaluated: boolean | null
+  counts: SeverityCounts | null
+  ci_cd_count: number | null
   python_counts: PythonCounts | null
   branch: string | null
   commit: string | null
@@ -27,27 +29,52 @@ export type AnalysisSummary = {
   finished_at: string | null
 }
 
-type Finding = {
-  rule_id: string
-  severity: Severity
-  file: string
-  line: number
-  column: number
+type FindingBase = {
   message: string
-  evidence: string
-  remediation: string
+  severity: Severity | null
+  advisory_id: string | null
 }
+
+type DependencyProjectStatus = { name: string; status: string; reason: string | null }
+
+export type Finding = FindingBase & (
+  | {
+    kind: 'ci-cd'
+    severity: Severity
+    metadata: {
+      rule_id: string
+      confidence: 'low' | 'medium' | 'high'
+      persona: 'regular' | 'pedantic'
+      file: string
+      line: number
+      column: number
+      location: string
+      evidence: string
+      remediation: string
+      upstream: {
+        tool: string
+        rule_id: string
+        version: string | null
+        commit: string | null
+        source_url: string | null
+        documentation_url: string
+      }
+    }
+  }
+  | {
+    kind: 'dependency-vulnerability'
+    metadata: {
+      dependency: { name: string; version: string }
+      link: string
+      fix_versions: string[]
+    }
+  }
+  | { kind: 'dependency-project-status'; metadata: DependencyProjectStatus }
+)
 
 export type DependencyAudit = {
   audited_packages: number
-  vulnerabilities: {
-    dependency: { name: string; version: string }
-    id: string
-    summary: string | null
-    link: string
-    fix_versions: string[]
-  }[]
-  adverse_statuses: { name: string; status: string; reason: string | null }[]
+  adverse_statuses: DependencyProjectStatus[]
 }
 
 export type AnalysisResult = AnalysisSummary & {
@@ -70,6 +97,7 @@ export type GlobalRunSummary = GlobalRun & {
   active_count: number
   evaluated_count: number
   counts: SeverityCounts | null
+  ci_cd_count: number | null
   python_counts: PythonCounts | null
 }
 
@@ -102,18 +130,10 @@ export function isActive(result: AnalysisSummary) {
   return result.status === 'queued' || result.status === 'running'
 }
 
-export function resultCount(result: AnalysisSummary, severity: Severity) {
-  const count = result.counts[severity]
-  if (isActive(result) || (count === 0 && !isCiCdEvaluated(result))) {
-    return undefined
-  }
-  return count
-}
-
-export function isCiCdEvaluated(result: AnalysisSummary) {
-  return result.ci_cd_evaluated ?? (result.status === 'clean' || result.status === 'findings')
+export function totalFindings(counts: SeverityCounts) {
+  return severityBuckets.reduce((total, severity) => total + counts[severity], 0)
 }
 
 export function totalPythonFindings(counts: PythonCounts) {
-  return counts.security_findings + counts.adverse_project_statuses
+  return counts.vulnerabilities + counts.project_status_findings
 }

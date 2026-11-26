@@ -6,14 +6,31 @@ from nomad_sec_ops import AnalysisReport
 from nomad_sec_ops.models import (
     AnalysisStatus,
     CheckResult,
+    CICDFinding,
+    CICDFindingMetadata,
     DependencyAudit,
-    Finding,
+    DependencyProjectStatus,
+    DependencyProjectStatusFinding,
+    DependencyVulnerabilityFinding,
     StepResult,
     UpstreamRule,
 )
 
 from nomad_sec_manager.analysis import AnalysisResult, report_fields
-from nomad_sec_manager.analysis_results import AnalysisSummary, PythonCounts
+from nomad_sec_manager.analysis_results import PythonCounts, SeverityCounts
+
+
+def stored_result(fields: dict) -> AnalysisResult:
+    return AnalysisResult.from_document(
+        {
+            "_id": ObjectId(),
+            "repository_id": ObjectId(),
+            "repository_name": "example/repository",
+            "global_run_id": ObjectId(),
+            "created_at": datetime.now(UTC),
+            **fields,
+        }
+    )
 
 
 class ReportFieldsTests(TestCase):
@@ -33,29 +50,39 @@ class ReportFieldsTests(TestCase):
                         )
                     ]
                 )
-                self.assertEqual(report_fields(report)["status"], expected)
+                fields = report_fields(report)
+                self.assertEqual(fields["status"], expected)
+                if expected == "clean":
+                    self.assertEqual(fields["counts"], SeverityCounts().model_dump())
+                    self.assertEqual(fields["ci_cd_count"], 0)
+                else:
+                    self.assertIsNone(fields["counts"])
+                    self.assertIsNone(fields["ci_cd_count"])
         self.assertEqual(report_fields(AnalysisReport())["status"], "not_evaluated")
 
     def test_counts_and_evidence_survive_an_incomplete_report(self):
-        finding = Finding(
-            rule_id="example",
+        finding = CICDFinding(
+            kind="ci-cd",
             severity="high",
-            confidence="high",
-            persona="regular",
-            file="workflow.yml",
-            line=1,
-            column=1,
-            location="workflow.yml:1:1",
             message="A finding",
-            evidence="Example evidence",
-            remediation="Example fix",
-            upstream=UpstreamRule(
-                tool="example",
+            metadata=CICDFindingMetadata(
                 rule_id="example",
-                version=None,
-                commit=None,
-                source_url=None,
-                documentation_url="https://example.org/check",
+                confidence="high",
+                persona="regular",
+                file="workflow.yml",
+                line=1,
+                column=1,
+                location="workflow.yml:1:1",
+                evidence="Example evidence",
+                remediation="Example fix",
+                upstream=UpstreamRule(
+                    tool="example",
+                    rule_id="example",
+                    version=None,
+                    commit=None,
+                    source_url=None,
+                    documentation_url="https://example.org/check",
+                ),
             ),
         )
         report = AnalysisReport(
@@ -81,97 +108,75 @@ class ReportFieldsTests(TestCase):
         )
         fields = report_fields(report)
         self.assertEqual(fields["status"], "not_evaluated")
-        self.assertEqual(
-            fields["counts"], {"high": 1, "medium": 0, "low": 1, "informational": 0}
-        )
-        self.assertEqual(
-            fields["steps"][0]["findings"][0]["evidence"], "Example evidence"
-        )
-        self.assertTrue(fields["ci_cd_evaluated"])
-        self.assertIsNone(fields["python_counts"])
+        result = stored_result(fields)
+        self.assertEqual(result.counts, SeverityCounts(high=1, low=1))
+        self.assertEqual(result.steps[0].findings[0], finding)
+        self.assertEqual(result.ci_cd_count, 2)
+        self.assertIsNone(result.python_counts)
 
-    def test_python_audit_counts_and_details_survive_serialization(self):
-        audit = DependencyAudit.model_validate(
+    def test_python_findings_and_metadata_survive_serialization(self):
+        vulnerability = DependencyVulnerabilityFinding.model_validate(
             {
-                "audited_packages": 2,
-                "vulnerabilities": [
-                    {
-                        "dependency": {"name": "example", "version": "1.0"},
-                        "id": "PYSEC-0000-1",
-                        "summary": "An example advisory",
-                        "link": "https://example.org/advisory",
-                        "fix_versions": ["1.1"],
-                    }
-                ],
-                "adverse_statuses": [
-                    {"name": "archived-example", "status": "archived", "reason": None}
-                ],
+                "kind": "dependency-vulnerability",
+                "message": "An example advisory",
+                "severity": None,
+                "advisory_id": "PYSEC-0000-1",
+                "metadata": {
+                    "dependency": {"name": "example", "version": "1.0"},
+                    "link": "https://example.org/advisory",
+                    "fix_versions": ["1.1"],
+                },
             }
         )
-        for vulnerabilities, adverse_statuses, expected in (
-            (audit.vulnerabilities, audit.adverse_statuses, "findings"),
-            ([], audit.adverse_statuses, "findings"),
-            ([], [], "clean"),
+        deprecation = DependencyProjectStatusFinding(
+            kind="dependency-project-status",
+            message="old-example is deprecated",
+            severity=None,
+            metadata=DependencyProjectStatus(
+                name="old-example", status="deprecated", reason="Use new-example."
+            ),
+        )
+        audit = DependencyAudit(
+            audited_packages=3,
+            adverse_statuses=[
+                DependencyProjectStatus(name="archived-example", status="archived")
+            ],
+        )
+        for findings, counts, python_counts in (
+            (
+                [vulnerability, deprecation],
+                SeverityCounts(unavailable=2),
+                PythonCounts(vulnerabilities=1, project_status_findings=1),
+            ),
+            (
+                [deprecation],
+                SeverityCounts(unavailable=1),
+                PythonCounts(project_status_findings=1),
+            ),
+            ([], SeverityCounts(), PythonCounts()),
         ):
-            with self.subTest(
-                vulnerabilities=vulnerabilities, adverse=adverse_statuses
-            ):
-                current_audit = audit.model_copy(
-                    update={
-                        "vulnerabilities": vulnerabilities,
-                        "adverse_statuses": adverse_statuses,
-                    }
-                )
-                fields = report_fields(
-                    AnalysisReport(
-                        steps=[
-                            StepResult(
-                                name="python-dependencies",
-                                result=CheckResult(
-                                    status=AnalysisStatus.FINDINGS
-                                    if vulnerabilities
-                                    else AnalysisStatus.PASSED,
-                                    message="Python audit completed.",
-                                    dependency_audit=current_audit,
-                                ),
-                            )
-                        ]
+            with self.subTest(findings=findings):
+                status = AnalysisStatus.FINDINGS if findings else AnalysisStatus.PASSED
+                result = stored_result(
+                    report_fields(
+                        AnalysisReport(
+                            steps=[
+                                StepResult(
+                                    name="python-dependencies",
+                                    result=CheckResult(
+                                        status=status,
+                                        message="Python audit completed.",
+                                        findings=findings,
+                                        dependency_audit=audit,
+                                    ),
+                                )
+                            ]
+                        )
                     )
                 )
-                result = AnalysisResult.from_document(
-                    {
-                        "_id": ObjectId(),
-                        "repository_id": ObjectId(),
-                        "repository_name": "example/repository",
-                        "global_run_id": ObjectId(),
-                        "created_at": datetime.now(UTC),
-                        **fields,
-                    }
-                )
-                self.assertEqual(result.status, expected)
-                self.assertFalse(result.ci_cd_evaluated)
-                self.assertEqual(sum(result.counts.model_dump().values()), 0)
-                self.assertEqual(
-                    result.python_counts,
-                    PythonCounts(
-                        security_findings=len(vulnerabilities),
-                        adverse_project_statuses=len(adverse_statuses),
-                    ),
-                )
-                self.assertEqual(result.steps[0].dependency_audit, current_audit)
-
-    def test_legacy_result_keeps_ci_cd_counts_with_python_unavailable(self):
-        result = AnalysisSummary.from_document(
-            {
-                "_id": ObjectId(),
-                "repository_id": ObjectId(),
-                "repository_name": "example/repository",
-                "global_run_id": ObjectId(),
-                "created_at": datetime.now(UTC),
-                "status": "findings",
-                "counts": {"high": 2},
-            }
-        )
-        self.assertEqual(result.counts.high, 2)
-        self.assertIsNone(result.ci_cd_evaluated)
-        self.assertIsNone(result.python_counts)
+                self.assertEqual(result.status, "findings" if findings else "clean")
+                self.assertIsNone(result.ci_cd_count)
+                self.assertEqual(result.counts, counts)
+                self.assertEqual(result.python_counts, python_counts)
+                self.assertEqual(result.steps[0].findings, findings)
+                self.assertEqual(result.steps[0].dependency_audit, audit)
